@@ -95,10 +95,11 @@ Comandos útiles en `ContainerApp/`: `npm run typecheck`, `npm run build`,
 
 ## Compilar y empaquetar
 
-Guía completa (incluye el detalle de compilar el sidecar **en Linux** por los binarios
-nativos): **[docs/empaquetado.md](docs/empaquetado.md)**.
+**Vía recomendada — CI**: el instalador de Linux se compila en GitHub Actions
+(*Actions → Build Linux (Omarchy) → Run workflow*, o tagueando `v*` para publicar un
+Release). Detalle en **[docs/empaquetado.md](docs/empaquetado.md)**.
 
-Resumen:
+Manual (en una máquina Linux):
 ```bash
 cd BackgroundRemove/sidecar && npm ci && npm run build   # motor con binarios de Linux
 cd ../../ContainerApp && npm ci && npm run dist:linux     # AppImage + paquete pacman en dist/

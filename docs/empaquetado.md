@@ -4,6 +4,23 @@ Guía para compilar y distribuir **Sajaru Design** en Omarchy (Arch + Hyprland) 
 general, en cualquier Arch/Arch-based. Genera un **AppImage** universal y un **paquete
 pacman** nativo (`.pkg.tar.zst`).
 
+## La vía recomendada: CI (GitHub Actions)
+
+Como el equipo desarrolla en macOS y el motor necesita binarios de Linux, el instalador
+se compila en la nube con [.github/workflows/build-linux.yml](../.github/workflows/build-linux.yml):
+
+- **Build manual**: GitHub → pestaña **Actions** → *Build Linux (Omarchy)* → **Run
+  workflow** → al terminar, bajá el artifact `sajaru-design-linux-*` (trae el AppImage y
+  el .pacman).
+- **Release**: taguear una versión publica los instaladores en GitHub Releases:
+  ```bash
+  git tag v0.1.0 && git push --tags
+  ```
+- El workflow compila el sidecar con `npm ci` EN Linux (binarios nativos correctos),
+  corre el typecheck y empaqueta con electron-builder.
+
+Lo que sigue abajo es la vía manual (una máquina Arch/Omarchy real).
+
 ## Importante: compilá en Linux
 
 El “motor” de Sajaru Design es un **sidecar** (un CLI en `BackgroundRemove/sidecar/`) que usa
