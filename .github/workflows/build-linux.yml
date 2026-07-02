@@ -19,6 +19,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # bsdtar: lo usa fpm para armar el paquete pacman (.MTREE) — no viene en el runner.
+      - name: Dependencias del sistema (bsdtar para el target pacman)
+        run: sudo apt-get update -q && sudo apt-get install -y -q libarchive-tools
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
