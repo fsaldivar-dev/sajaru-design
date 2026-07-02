@@ -47,18 +47,14 @@ linux:
     Sajaru Design es una suite de escritorio para agencias de sublimado y DTF:
     quitar fondo por lote, mejorar resolución, vectorizar logos, preparar
     archivos para sublimación y generar mockups 3D con video 360°.
-  # Dependencias de sistema del motor: node para el sidecar, ffmpeg (video 360°),
-  # ghostscript (exportar vector a PDF/EPS).
-  depends:
-    - nodejs
-    - ffmpeg
-    - ghostscript
 
 appImage:
   artifactName: ${productName}-${version}-${arch}.${ext}
 
 pacman:
-  # depends se hereda de linux.depends; se listan igual por claridad del paquete Arch.
+  # Dependencias de sistema del motor: node para el sidecar, ffmpeg (video 360°),
+  # ghostscript (exportar vector a PDF/EPS). El AppImage no declara deps: documentado
+  # en README/docs que requiere estos paquetes instalados.
   depends:
     - nodejs
     - ffmpeg
