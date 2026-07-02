@@ -1,0 +1,32 @@
+{
+  "name": "@sajaru/bg-sidecar",
+  "version": "0.1.0",
+  "description": "Sajaru Design — sidecar CLI for the background-removal mini app (sublimation pipeline).",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "bg-sidecar": "./dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsup",
+    "typecheck": "tsc --noEmit",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@neplex/vectorizer": "^0.1.0",
+    "commander": "^15.0.0",
+    "onnxruntime-node": "^1.27.0",
+    "pdfkit": "^0.19.1",
+    "potrace": "^2.1.8",
+    "sharp": "^0.35.2",
+    "svg-to-pdfkit": "^0.1.8"
+  },
+  "devDependencies": {
+    "@types/node": "^26.0.0",
+    "@types/pdfkit": "^0.17.6",
+    "tsup": "^8.5.1",
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
+  }
+}

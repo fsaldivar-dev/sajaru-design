@@ -1,0 +1,68 @@
+# Compila Sajaru Design para Omarchy/Arch Linux en la nube (el dev trabaja en macOS,
+# pero el motor usa binarios NATIVOS de Linux — sharp/onnxruntime — así que el
+# instalador SIEMPRE se construye acá).
+#
+# - Manual: pestaña Actions → "Build Linux (Omarchy)" → Run workflow → bajar el artifact.
+# - Release: taguear (git tag v0.1.0 && git push --tags) publica AppImage + pacman en
+#   GitHub Releases automáticamente.
+name: Build Linux (Omarchy)
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            ContainerApp/package-lock.json
+            BackgroundRemove/sidecar/package-lock.json
+
+      - name: Motor (sidecar) — deps nativas de Linux + build
+        working-directory: BackgroundRemove/sidecar
+        run: |
+          npm ci
+          npm run build
+
+      - name: Typecheck de la app
+        working-directory: ContainerApp
+        run: |
+          npm ci
+          npm run typecheck
+
+      - name: App + instaladores (AppImage + pacman)
+        working-directory: ContainerApp
+        run: |
+          npm run build
+          npx electron-builder --linux --publish never
+
+      - name: Listar salida
+        run: ls -lh "ContainerApp/dist" | grep -E "AppImage|pacman" || ls -lh ContainerApp/dist
+
+      - name: Subir artifacts (toda corrida)
+        uses: actions/upload-artifact@v4
+        with:
+          name: sajaru-design-linux-${{ github.run_number }}
+          path: |
+            ContainerApp/dist/*.AppImage
+            ContainerApp/dist/*.pacman
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publicar Release (solo tags v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ContainerApp/dist/*.AppImage
+            ContainerApp/dist/*.pacman
+          generate_release_notes: true

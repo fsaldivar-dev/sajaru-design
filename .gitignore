@@ -1,0 +1,11 @@
+# macOS
+.DS_Store
+
+# Dependencias y builds (cada paquete tiene además su propio .gitignore)
+node_modules/
+dist/
+out/
+*.log
+
+# Claude Code (sesiones locales)
+.claude/

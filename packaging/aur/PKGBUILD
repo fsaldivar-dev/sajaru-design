@@ -1,0 +1,63 @@
+# Maintainer: Sajaru Design <soporte@sajaru.mx>
+#
+# Paquete para Arch / Omarchy Linux a partir del AppImage generado por electron-builder.
+# Alternativa al target `pacman` nativo (`npm run dist:linux` ya produce un .pkg.tar.zst).
+#
+# Uso:
+#   1) En Linux:  cd ContainerApp && npm run dist:linux
+#   2) Copiá el AppImage resultante junto a este PKGBUILD con el nombre esperado:
+#        cp "ContainerApp/dist/Sajaru Design-0.1.0-x86_64.AppImage" \
+#           packaging/aur/sajaru-design-0.1.0.AppImage
+#   3) makepkg -si
+pkgname=sajaru-design
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Suite de escritorio de sublimado y DTF: quitar fondo, vectorizar, mockups 3D y video 360"
+arch=('x86_64')
+url="https://sajaru.mx"
+license=('LicenseRef-proprietary')
+# nodejs: corre el sidecar (motor). ffmpeg: video 360 del Mockup 3D. ghostscript: exportar vector a PDF/EPS.
+depends=('nodejs' 'ffmpeg' 'ghostscript')
+options=('!strip')
+source=("${pkgname}-${pkgver}.AppImage")
+sha256sums=('SKIP')
+noextract=("${pkgname}-${pkgver}.AppImage")
+
+prepare() {
+  chmod +x "${pkgname}-${pkgver}.AppImage"
+  # Extraemos el AppImage (evita depender de FUSE en tiempo de ejecución).
+  "./${pkgname}-${pkgver}.AppImage" --appimage-extract >/dev/null
+}
+
+package() {
+  # 1) App completa (incluye resources/sidecar) a /opt.
+  install -d "${pkgdir}/opt/${pkgname}"
+  cp -a squashfs-root/. "${pkgdir}/opt/${pkgname}/"
+
+  # 2) Sandbox de Chromium (Electron lo requiere con setuid).
+  if [ -f "${pkgdir}/opt/${pkgname}/chrome-sandbox" ]; then
+    chmod 4755 "${pkgdir}/opt/${pkgname}/chrome-sandbox"
+  fi
+
+  # 3) Lanzador en PATH.
+  install -d "${pkgdir}/usr/bin"
+  ln -s "/opt/${pkgname}/AppRun" "${pkgdir}/usr/bin/${pkgname}"
+
+  # 4) Entrada de menú (.desktop) apuntando al binario instalado.
+  local desktop
+  desktop=$(find squashfs-root -maxdepth 1 -name '*.desktop' | head -n1)
+  if [ -n "${desktop}" ]; then
+    install -Dm644 "${desktop}" "${pkgdir}/usr/share/applications/${pkgname}.desktop"
+    sed -i "s|^Exec=.*|Exec=${pkgname} %U|" "${pkgdir}/usr/share/applications/${pkgname}.desktop"
+    sed -i "s|^Icon=.*|Icon=${pkgname}|" "${pkgdir}/usr/share/applications/${pkgname}.desktop"
+  fi
+
+  # 5) Iconos del tema hicolor.
+  for s in 512 256 128 64; do
+    local src="squashfs-root/usr/share/icons/hicolor/${s}x${s}/apps"
+    if [ -d "${src}" ]; then
+      install -Dm644 "${src}"/*.png \
+        "${pkgdir}/usr/share/icons/hicolor/${s}x${s}/apps/${pkgname}.png" 2>/dev/null || true
+    fi
+  done
+}

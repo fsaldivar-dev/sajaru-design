@@ -1,0 +1,113 @@
+@import 'tailwindcss';
+
+/* El variant `dark:` sigue la clase .dark del toggle in-app (no el OS).
+   Sin esto, Tailwind v4 usa prefers-color-scheme y el toggle no afecta los dark:*. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Mapea los tokens semánticos a utilidades de Tailwind v4 (bg-background, text-muted-foreground, …). */
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-border: hsl(var(--border));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+}
+
+/* Tokens de marca — paleta del logo Sajaru:
+   navy #2c303b (tinta) · teal #529a9d (pincel) · rosa #e86a85 (mejilla/acentos).
+   Cambiá estos valores para re-tematizar toda la app. */
+:root {
+  color-scheme: light;
+  --background: 0 0% 100%;
+  --foreground: 222 15% 20%; /* navy de la marca */
+  --card: 0 0% 100%;
+  --card-foreground: 222 15% 20%;
+  --muted: 216 14% 96%;
+  --muted-foreground: 220 8% 46%;
+  --border: 218 12% 89%;
+  --primary: 182 31% 42%; /* teal de la marca (ajustado para contraste sobre blanco) */
+  --primary-foreground: 0 0% 100%;
+  --accent: 347 70% 62%; /* rosa de la marca */
+  --accent-foreground: 0 0% 100%;
+}
+
+/* Tema oscuro PRO (estética Affinity/Photoshop) con el tinte navy de la marca.
+   Se activa con la clase .dark en <html> (toggle in-app), no por el OS. */
+.dark {
+  color-scheme: dark;
+  --background: 222 15% 9%;
+  --foreground: 220 15% 95%;
+  --card: 222 14% 12%;
+  --card-foreground: 220 15% 95%;
+  --muted: 222 12% 16%;
+  --muted-foreground: 220 9% 64%;
+  --border: 222 11% 21%;
+  --primary: 182 32% 56%; /* teal aclarado para fondos oscuros */
+  --primary-foreground: 222 15% 10%;
+  --accent: 347 72% 70%;
+  --accent-foreground: 222 15% 10%;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  /* Checkboxes/sliders nativos en teal de marca, en TODAS las views. */
+  accent-color: hsl(var(--primary));
+}
+
+/* Selección de texto con la marca. */
+::selection {
+  background: hsl(var(--primary) / 0.28);
+}
+
+/* Scrollbars finos y temáticos (look pro, como las suites de diseño). */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background: hsl(var(--border));
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.55);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* Gradiente de marca (teal → rosa), la firma visual del splash.
+   Usado en la línea de acento del shell y en las barras de progreso. */
+.brand-gradient {
+  background-image: linear-gradient(90deg, hsl(var(--primary)), hsl(var(--accent)));
+}
+
+/* Barra de progreso: un brillo que recorre la barra para que se vea que está
+   trabajando aunque el % no avance (ej. esperando una llamada a la API premium). */
+@keyframes sajaru-shimmer {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}

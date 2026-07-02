@@ -1,0 +1,68 @@
+# Empaquetado de Sajaru Design (Electron) para Linux — pensado para Omarchy (Arch + Hyprland).
+# Produce un AppImage universal y un paquete pacman nativo (.pkg.tar.zst) para `pacman -U`.
+#
+# IMPORTANTE: el "motor" pesado (sidecar: sharp + onnxruntime) es un paquete APARTE con
+# binarios NATIVOS. Debe compilarse EN Linux antes de empaquetar (ver docs/empaquetado.md):
+#   cd BackgroundRemove/sidecar && npm ci && npm run build
+# y viaja como extraResources en `resources/sidecar` (el main lo resuelve ahí en prod).
+appId: com.sajaru.design
+productName: Sajaru Design
+copyright: © Sajaru Design
+
+directories:
+  buildResources: build
+  output: dist
+
+# El código de la app ya está bundleado por electron-vite en out/. Excluimos fuentes/config.
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!electron-builder.yml'
+  - '!{.eslintignore,.eslintrc.cjs,.eslintrc.js,.gitignore,.prettierignore,.prettierrc,.editorconfig}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+
+# El sidecar (CLI motor) viaja fuera del asar, en resources/sidecar.
+# El logo va a resources/ para que el splash lo lea en producción.
+extraResources:
+  - from: build/logo.png
+    to: logo.png
+  - from: ../BackgroundRemove/sidecar/dist
+    to: sidecar/dist
+  - from: ../BackgroundRemove/sidecar/node_modules
+    to: sidecar/node_modules
+  - from: ../BackgroundRemove/sidecar/package.json
+    to: sidecar/package.json
+
+linux:
+  target:
+    - AppImage
+    - pacman
+  executableName: sajaru-design
+  category: Graphics
+  icon: build/icon.png
+  maintainer: Sajaru Design <soporte@sajaru.mx>
+  synopsis: Suite de sublimado y DTF (quitar fondo, vectorizar, mockups 3D)
+  description: >
+    Sajaru Design es una suite de escritorio para agencias de sublimado y DTF:
+    quitar fondo por lote, mejorar resolución, vectorizar logos, preparar
+    archivos para sublimación y generar mockups 3D con video 360°.
+  # Dependencias de sistema del motor: node para el sidecar, ffmpeg (video 360°),
+  # ghostscript (exportar vector a PDF/EPS).
+  depends:
+    - nodejs
+    - ffmpeg
+    - ghostscript
+
+appImage:
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+pacman:
+  # depends se hereda de linux.depends; se listan igual por claridad del paquete Arch.
+  depends:
+    - nodejs
+    - ffmpeg
+    - ghostscript
+
+# En dev no publicamos; el release se sube a mano.
+publish: null
