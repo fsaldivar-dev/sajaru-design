@@ -643,7 +643,7 @@ export default function Vectorizar(): React.JSX.Element {
           <input
             type="range"
             min={2}
-            max={16}
+            max={24}
             value={config.colors}
             disabled={busy}
             onChange={(e) => set('colors', Number(e.target.value))}

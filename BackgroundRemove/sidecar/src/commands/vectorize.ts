@@ -40,7 +40,7 @@ export interface PaletteEdit {
 }
 
 export interface VectorizeOptions {
-  /** Máximo de colores de la paleta (2..16). Se detectan los reales y se capan a esto. */
+  /** Máximo de colores de la paleta (2..24). Se detectan los reales y se capan a esto. */
   colors: number
   /** Tamaño del PNG rasterizado de salida. */
   size: number
@@ -337,7 +337,7 @@ export async function vectorizeStep(
   const meta = await sharp(buf).metadata()
   const maxDim = Math.max(meta.width ?? 512, meta.height ?? 512)
   const target = Math.min(1536, Math.max(1280, maxDim))
-  const palMax = Math.max(2, Math.min(16, Math.round(opts.colors)))
+  const palMax = Math.max(2, Math.min(24, Math.round(opts.colors)))
 
   // Reducir ruido: filtro de MEDIANA (quita grano / textura "distressed" preservando bordes)
   // ANTES de detectar la paleta → la paleta sale más limpia (sin tonos de grano) y los
@@ -483,10 +483,13 @@ export async function vectorizeStep(
       .filter((c) => c.count > opaque * 0.0006)
       .sort((a, b) => b.count - a.count)
       .slice(0, 80) // cap de candidatos (acota el costo O(n²) de reduceTo)
-    // fusiona casi-idénticos (variantes AA), preservando colores de marca distintos
+    // fusiona casi-idénticos (variantes AA), preservando colores de marca distintos. Con
+    // paletas grandes (≥14) fusiona MÁS FINO: el sombreado pictórico son pasos de ~24-30
+    // de distancia y la fusión a 32 los aplastaba (pedías 16 y recibías 12).
+    const nearTol = palMax >= 20 ? 16 : palMax >= 14 ? 24 : 32
     palette = []
     for (const c of cand) {
-      const near = palette.find((p) => dist2(c.r, c.g, c.b, p) < 32 * 32)
+      const near = palette.find((p) => dist2(c.r, c.g, c.b, p) < nearTol * nearTol)
       if (near) {
         const t = near.count + c.count
         near.r = Math.round((near.r * near.count + c.r * c.count) / t)

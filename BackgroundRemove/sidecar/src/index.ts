@@ -323,7 +323,7 @@ program
   .command('vectorize')
   .requiredOption('-i, --input <path>', 'imagen de entrada')
   .option('-o, --output <path>', 'PNG de salida (también escribe .svg)')
-  .option('--colors <n>', 'máx. colores de la paleta 2..16 (se detectan los reales)', num, 10)
+  .option('--colors <n>', 'máx. colores de la paleta 2..24 (se detectan los reales)', num, 10)
   .option('--size <n>', 'tamaño de salida en px', num, 2048)
   .option('--edit <json>', 'JSON [{r,g,b,to?,remove?}] para FIJAR/editar la paleta (reemplazar/quitar)')
   .option('--denoise <n>', 'reducir ruido 0..100 (mediana antes de detectar la paleta)', num, 0)

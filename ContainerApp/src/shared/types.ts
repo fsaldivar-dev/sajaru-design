@@ -79,7 +79,7 @@ export interface PaletteEdit extends RgbColor {
 }
 
 export interface VectorizeConfig {
-  /** Cantidad de colores de la paleta (2..12). Más = más detalle. */
+  /** Cantidad de colores de la paleta (2..24). Más = más detalle. */
   colors: number
   /** Tamaño del PNG rasterizado de salida (px, lado mayor). */
   size: number
