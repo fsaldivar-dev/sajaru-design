@@ -54,6 +54,13 @@ export interface VectorizeOptions {
   denoise?: number
   /** Fundir "bordes": colores-franja finos se funden al color vecino dominante (default true). */
   mergeThin?: boolean
+  /**
+   * NO quitar el fondo uniforme del borde (default false = se quita). El flujo profesional
+   * "vectorizo todo y después elimino" necesita el diseño FIEL con su fondo: en carteles el
+   * fondo es parte del arte, y en logos con blancos el flood puede encadenarse por zonas
+   * blancas legítimas (aro→alas) y comerse tinta imprimible (DTF sobre prenda oscura).
+   */
+  keepBackground?: boolean
 }
 
 interface Color {
@@ -362,7 +369,7 @@ export async function vectorizeStep(
   // logo (p.ej. un hocico claro) porque no tocan el borde.
   let transparent = 0
   for (let i = 0; i < N; i++) if (alpha[i] < 128) transparent++
-  if (transparent < N * 0.05) {
+  if (!opts.keepBackground && transparent < N * 0.05) {
     const bsamp: Array<[number, number, number]> = []
     const samp = (x: number, y: number): void => {
       const i = (y * W + x) * 4
@@ -678,6 +685,7 @@ export async function vectorizeCommand(
     edit?: PaletteEdit[]
     denoise?: number
     mergeThin?: boolean
+    keepBackground?: boolean
   },
   ctx: Ctx
 ): Promise<{
@@ -729,7 +737,7 @@ export async function vectorizeCommand(
     buffer = await sharp(Buffer.from(svg), { density: 300 }).resize(size, size, { fit: 'inside' }).png().toBuffer()
     ctx.progress('vectorize', 1)
   } else {
-    const r = await vectorizeStep(buf, { colors, size, edit: opts.edit, denoise: opts.denoise, mergeThin: opts.mergeThin }, ctx)
+    const r = await vectorizeStep(buf, { colors, size, edit: opts.edit, denoise: opts.denoise, mergeThin: opts.mergeThin, keepBackground: opts.keepBackground }, ctx)
     svg = r.svg
     buffer = r.buffer
     palette = r.palette

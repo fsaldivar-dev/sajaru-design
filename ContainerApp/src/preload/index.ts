@@ -31,7 +31,7 @@ const api: SajaruApi = {
   vectorize: {
     setImage: (bytes, name) => ipcRenderer.invoke('vec:setImage', bytes, name),
     process: (config) => ipcRenderer.invoke('vec:process', config),
-    areaFill: (rect) => ipcRenderer.invoke('vec:areaFill', rect),
+    areaFill: (rect, mode, to) => ipcRenderer.invoke('vec:areaFill', rect, mode, to),
     clearAreaFills: () => ipcRenderer.invoke('vec:clearAreaFills'),
     saveSvg: (suggestedName) => ipcRenderer.invoke('vec:saveSvg', suggestedName),
     savePng: (suggestedName) => ipcRenderer.invoke('vec:savePng', suggestedName),

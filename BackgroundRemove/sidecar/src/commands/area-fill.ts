@@ -3,17 +3,32 @@ import path from 'node:path'
 import sharp from 'sharp'
 import type { Ctx } from '../core/context'
 
+export type AreaMode = 'fill' | 'erase' | 'recolor'
+
 /**
- * "Fundir al color predominante" en un rectángulo: dentro del área, todos los píxeles OPACOS
- * toman el color dominante de esa zona (la transparencia se respeta). Sirve para tapar
- * artefactos como la línea roja de borde: seleccionás un rectángulo donde el color bueno
- * predomina y la franja artefacto se funde a ese color. Opera sobre el raster del resultado
- * (limpia el PNG/PDF exportado). `rect` viene en píxeles del PNG.
+ * Herramientas de ZONA sobre el raster del resultado (rect en píxeles del PNG):
+ *  - `fill`   (fundir):     todos los píxeles OPACOS del rect toman el color dominante de la
+ *                           zona (tapa artefactos: franjas, líneas de borde).
+ *  - `erase`  (borrar):     los píxeles del rect que MATCHEAN el color dominante se vuelven
+ *                           transparentes (quitar fondo/esquinas sin llevarse los trazos de
+ *                           otros colores que crucen el rect) — flujo "vectorizo todo y elimino".
+ *  - `recolor`(recolorear): los píxeles del rect que matchean el dominante toman `to` (cambiar
+ *                           el color de UNA región sin tocar el resto de ese color en el diseño).
+ * `erase`/`recolor` operan SOLO sobre el color dominante del rect para ser seguros cuando la
+ * selección roza trazos vecinos. La transparencia existente siempre se respeta.
  */
 export async function areaFillCommand(
-  opts: { input: string; output: string; rect: { x: number; y: number; w: number; h: number } },
+  opts: {
+    input: string
+    output: string
+    rect: { x: number; y: number; w: number; h: number }
+    mode?: AreaMode
+    /** Color destino para `recolor` (r,g,b 0-255). */
+    to?: { r: number; g: number; b: number }
+  },
   ctx: Ctx
 ): Promise<{ output: string; color: string | null }> {
+  const mode: AreaMode = opts.mode ?? 'fill'
   ctx.progress('vectorize', 0.2, 'Leyendo resultado')
   const src = sharp(opts.input)
   const meta = await src.metadata()
@@ -50,15 +65,34 @@ export async function areaFillCommand(
     return { output: opts.output, color: null }
   }
 
-  // Funde: todos los opacos del rect → color dominante (respeta transparencia).
-  ctx.progress('vectorize', 0.7, 'Fundiendo al color predominante')
+  // ¿El píxel pertenece al color dominante? (tolerancia perceptual simple; agrupa anti-alias)
+  const TOL2 = 48 * 48
+  const matchesDom = (i: number): boolean =>
+    (data[i] - dom.r) ** 2 + (data[i + 1] - dom.g) ** 2 + (data[i + 2] - dom.b) ** 2 < TOL2
+
+  ctx.progress(
+    'vectorize',
+    0.7,
+    mode === 'fill' ? 'Fundiendo al color predominante' : mode === 'erase' ? 'Borrando la zona' : 'Recoloreando la zona'
+  )
   for (let y = ry; y < ry + rh; y++) {
     for (let x = rx; x < rx + rw; x++) {
       const i = (y * W + x) * 4
       if (data[i + 3] < 128) continue
-      data[i] = dom.r
-      data[i + 1] = dom.g
-      data[i + 2] = dom.b
+      if (mode === 'fill') {
+        data[i] = dom.r
+        data[i + 1] = dom.g
+        data[i + 2] = dom.b
+      } else if (mode === 'erase') {
+        if (matchesDom(i)) data[i + 3] = 0
+      } else {
+        // recolor: solo los píxeles del color dominante del rect
+        if (matchesDom(i) && opts.to) {
+          data[i] = opts.to.r
+          data[i + 1] = opts.to.g
+          data[i + 2] = opts.to.b
+        }
+      }
     }
   }
 

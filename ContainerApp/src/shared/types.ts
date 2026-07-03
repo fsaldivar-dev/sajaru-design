@@ -87,9 +87,19 @@ export interface VectorizeConfig {
   method: 'local' | 'recraft'
   /** Reducir ruido 0..100 (mediana antes de detectar la paleta; limpia grano/textura). */
   denoise: number
+  /**
+   * Conservar el fondo del borde (vectorizar el diseño COMPLETO, fondo incluido).
+   * Default false = el fondo uniforme del borde se quita solo. El flujo profesional
+   * "vectorizo todo y después elimino" lo activa: el fondo es parte del arte y los
+   * blancos son tinta imprimible (DTF sobre prenda oscura).
+   */
+  keepBackground?: boolean
   /** Edición de paleta en vivo: fija la paleta detectada y reemplaza/quita colores. */
   edit?: PaletteEdit[]
 }
+
+/** Modo de la herramienta de ZONA del vectorizado (rect sobre el raster del resultado). */
+export type VectorAreaMode = 'fill' | 'erase' | 'recolor'
 
 /** Config que la mini app Mejorar manda al comando `enhance` del sidecar. */
 export interface UpscaleConfig {
@@ -348,8 +358,16 @@ export interface SajaruApi {
   vectorize: {
     setImage: (bytes: ArrayBuffer, name: string) => Promise<void>
     process: (config: VectorizeConfig) => Promise<BgProcessResult>
-    /** "Fundir al color predominante" en un rectángulo (px de la imagen resultado). Raster. */
-    areaFill: (rect: { x: number; y: number; w: number; h: number }) => Promise<BgProcessResult>
+    /**
+     * Herramienta de ZONA sobre el raster del resultado (px del PNG): 'fill' funde al color
+     * predominante, 'erase' borra el color predominante del rect (→ transparente),
+     * 'recolor' lo cambia a `to` (#rrggbb). Persisten y se re-aplican al re-vectorizar.
+     */
+    areaFill: (
+      rect: { x: number; y: number; w: number; h: number },
+      mode?: VectorAreaMode,
+      to?: string
+    ) => Promise<BgProcessResult>
     /** Borra todas las limpiezas de zona guardadas. */
     clearAreaFills: () => Promise<{ ok: boolean }>
     saveSvg: (suggestedName: string) => Promise<{ saved: boolean; path?: string }>

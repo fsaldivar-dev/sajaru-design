@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Component, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Copy, ImagePlus, Rotate3d, Upload, Video, X } from 'lucide-react'
 import { cn } from '@renderer/lib/cn'
 import { useShell } from '@renderer/lib/shell'
@@ -116,6 +116,31 @@ const GARMENT_COLORS = [
   { name: 'Verde', hex: '#15803d' },
   { name: 'Arena', hex: '#d8c9a3' }
 ]
+
+/**
+ * Si el visor 3D no puede crear el contexto WebGL (GPU bloqueada/driver, típico en Linux),
+ * R3F lanza al montar y sin esto la view queda en NEGRO sin explicación. Mostramos un aviso
+ * accionable en su lugar.
+ */
+class SceneBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false }
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true }
+  }
+  render(): ReactNode {
+    if (!this.state.failed) return this.props.children
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-2 p-8 text-center">
+        <p className="text-sm font-semibold">No se pudo iniciar el visor 3D (WebGL)</p>
+        <p className="max-w-md text-xs text-muted-foreground">
+          Tu equipo no pudo crear el contexto gráfico. Suele ser el driver de video: actualizá
+          Mesa/los drivers de tu GPU y reabrí la app. Si persiste, lanzá desde la terminal con{' '}
+          <code>sajaru-design --enable-unsafe-swiftshader</code> para forzar el modo por software.
+        </p>
+      </div>
+    )
+  }
+}
 
 /** Tallas mexicanas — factor = escala de la prenda (Niño más chica, XXL más grande). Solo playera. */
 const SIZES = [
@@ -335,20 +360,22 @@ export default function Mockup3D(): React.JSX.Element {
                   : '#f3f4f6'
               }}
             >
-              <Scene
-                decals={layers}
-                garmentColor={color}
-                modelUrl={product.model}
-                frontZ={product.frontZ}
-                normalize={!product.garment}
-                rotationY={product.rotationY}
-                autoRotate={autoRotate}
-                transparent={transparent}
-                brightness={brightness}
-                sizeScale={sizeScale}
-                allOverUrl={allOverUrl}
-                captureRef={captureRef}
-              />
+              <SceneBoundary>
+                <Scene
+                  decals={layers}
+                  garmentColor={color}
+                  modelUrl={product.model}
+                  frontZ={product.frontZ}
+                  normalize={!product.garment}
+                  rotationY={product.rotationY}
+                  autoRotate={autoRotate}
+                  transparent={transparent}
+                  brightness={brightness}
+                  sizeScale={sizeScale}
+                  allOverUrl={allOverUrl}
+                  captureRef={captureRef}
+                />
+              </SceneBoundary>
             </div>
             {layers.length === 0 && (
               <button

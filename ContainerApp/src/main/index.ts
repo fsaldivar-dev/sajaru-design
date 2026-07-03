@@ -12,6 +12,16 @@ import { registerSegmentSelectIpc } from './plugins/segment-select'
 import { registerRecraftIpc } from './plugins/recraft'
 import { createSplash } from './splash'
 
+// Omarchy/Arch (Wayland/Hyprland): Chromium puede BLOQUEAR WebGL por la blocklist de
+// GPU/Mesa y el visor 3D queda en NEGRO aunque el resto de la app funcione.
+// - ignore-gpu-blocklist: habilita la GPU real cuando el driver es viable.
+// - enable-unsafe-swiftshader: permite el fallback de WebGL por software si no lo es.
+// Deben setearse ANTES de app.whenReady(). Solo Linux (en macOS/Windows no hace falta).
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('ignore-gpu-blocklist')
+  app.commandLine.appendSwitch('enable-unsafe-swiftshader')
+}
+
 function createWindow(splash?: BrowserWindow, splashShownAt = 0): void {
   const win = new BrowserWindow({
     width: 1100,

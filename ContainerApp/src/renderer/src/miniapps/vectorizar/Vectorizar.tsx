@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Download, Eraser, Eye, EyeOff, Redo2, ScanEye, Undo2, Upload } from 'lucide-react'
-import type { PaletteEdit, RgbColor, VectorizeConfig } from '@shared/types'
+import type { PaletteEdit, RgbColor, VectorAreaMode, VectorizeConfig } from '@shared/types'
 import { cn } from '@renderer/lib/cn'
 import { CompareView } from '@renderer/components/CompareView'
 import { useRevokeOnUnmount } from '@renderer/lib/useRevokeOnUnmount'
@@ -9,7 +9,13 @@ import { OP_COST, recordUsage } from '@renderer/lib/premium'
 
 import { CHECKER, IMAGE_ACCEPT as ACCEPT } from '@renderer/lib/image'
 
-const DEFAULT_CONFIG: VectorizeConfig = { colors: 10, size: 2048, method: 'local', denoise: 30 }
+const DEFAULT_CONFIG: VectorizeConfig = {
+  colors: 10,
+  size: 2048,
+  method: 'local',
+  denoise: 30,
+  keepBackground: false
+}
 const SIZES = [1024, 2048, 4096]
 
 interface SourceImage {
@@ -38,9 +44,12 @@ export default function Vectorizar(): React.JSX.Element {
   const [error, setError] = useState<{ code: string; message: string } | null>(null)
   const [copied, setCopied] = useState(false)
   const [over, setOver] = useState(false)
-  // "Limpiar zona": modo selección de rectángulo + contador de zonas fundidas (para "Deshacer").
+  // Herramienta de ZONA: modo selección de rectángulo + contador de ediciones (para "Deshacer").
+  // areaMode: qué hace el rect — fundir al predominante, borrar (→ transparente) o recolorear.
   const [selecting, setSelecting] = useState(false)
   const [zones, setZones] = useState(0)
+  const [areaMode, setAreaMode] = useState<VectorAreaMode>('fill')
+  const [areaColor, setAreaColor] = useState('#8b5a2b')
 
   const tokenRef = useRef(0)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -303,13 +312,20 @@ export default function Vectorizar(): React.JSX.Element {
     openApp('playeras-mockup-3d', { bytes, name: `${baseName()}-vector.png` })
   }
 
-  /** "Limpiar zona": funde el rectángulo elegido al color predominante (raster). La zona
-   *  queda guardada en el main y se re-aplica si re-vectorizás (tocar capas/settings no la borra). */
+  /** Herramienta de ZONA: aplica el modo activo (fundir/borrar/recolorear) al rectángulo
+   *  elegido (raster). La edición queda guardada en el main y se re-aplica si re-vectorizás
+   *  (tocar capas/settings no la borra). */
   async function onSelectRect(rect: { x: number; y: number; w: number; h: number }): Promise<void> {
     const token = ++tokenRef.current
     setError(null)
-    setProgress({ value: 0, message: 'Fundiendo zona…' })
-    const r = await window.api.vectorize.areaFill(rect)
+    const msg =
+      areaMode === 'fill' ? 'Fundiendo zona…' : areaMode === 'erase' ? 'Borrando zona…' : 'Recoloreando zona…'
+    setProgress({ value: 0, message: msg })
+    const r = await window.api.vectorize.areaFill(
+      rect,
+      areaMode,
+      areaMode === 'recolor' ? areaColor : undefined
+    )
     if (token !== tokenRef.current) return
     setProgress(null)
     if (!r.ok) {
@@ -437,22 +453,66 @@ export default function Vectorizar(): React.JSX.Element {
               <div className="mb-2 flex shrink-0 items-center justify-between gap-2">
                 <h3 className="min-w-0 truncate text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                   {selecting
-                    ? 'Arrastrá un rectángulo sobre el artefacto → se funde al color predominante'
+                    ? areaMode === 'fill'
+                      ? 'Arrastrá un rectángulo → se funde al color predominante'
+                      : areaMode === 'erase'
+                        ? 'Arrastrá un rectángulo → su color predominante se BORRA (transparente)'
+                        : 'Arrastrá un rectángulo → su color predominante cambia al elegido'
                     : 'Vector · rueda = zoom · mantené “Ver original” para comparar'}
                 </h3>
                 <div className="flex shrink-0 items-center gap-3">
+                  {selecting && (
+                    <div className="flex items-center gap-1">
+                      {(
+                        [
+                          { m: 'fill' as const, label: 'Fundir' },
+                          { m: 'erase' as const, label: 'Borrar' },
+                          { m: 'recolor' as const, label: 'Recolorear' }
+                        ]
+                      ).map(({ m, label }) => (
+                        <button
+                          key={m}
+                          type="button"
+                          disabled={busy}
+                          onClick={() => setAreaMode(m)}
+                          className={cn(
+                            'rounded-md border px-2 py-0.5 text-[11px] font-medium transition disabled:opacity-40',
+                            areaMode === m
+                              ? 'border-foreground bg-foreground text-background'
+                              : 'border-border text-muted-foreground hover:text-foreground'
+                          )}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                      {areaMode === 'recolor' && (
+                        <label
+                          className="relative ml-1 h-5 w-7 shrink-0 cursor-pointer overflow-hidden rounded border border-border"
+                          title="Color destino del recoloreado"
+                        >
+                          <span className="absolute inset-0" style={{ backgroundColor: areaColor }} />
+                          <input
+                            type="color"
+                            value={areaColor}
+                            onChange={(e) => setAreaColor(e.target.value)}
+                            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                          />
+                        </label>
+                      )}
+                    </div>
+                  )}
                   <button
                     type="button"
                     disabled={!result || busy}
                     onClick={() => setSelecting((s) => !s)}
-                    title="Seleccioná una zona y se funde al color que predomina (tapa líneas/artefactos de borde)"
+                    title="Editá zonas del resultado: fundir al color predominante, borrarlo (transparente) o recolorearlo"
                     className={cn(
                       'flex items-center gap-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40',
                       selecting ? 'text-sky-500' : 'text-muted-foreground hover:text-foreground'
                     )}
                   >
                     <Eraser className="h-3.5 w-3.5" />
-                    {selecting ? 'Listo' : 'Limpiar zona'}
+                    {selecting ? 'Listo' : 'Editar zona'}
                   </button>
                   {zones > 0 && (
                     <button
@@ -558,6 +618,24 @@ export default function Vectorizar(): React.JSX.Element {
 
           {config.method === 'local' && (
             <>
+          {/* Flujo profesional: vectorizar el diseño COMPLETO (fondo incluido) y después
+              quitar lo que sobre con "Editar zona → Borrar". El blanco queda como capa
+              imprimible (DTF sobre prenda oscura). */}
+          <label className="mb-1 flex items-center justify-between text-sm font-medium">
+            <span>Conservar fondo</span>
+            <input
+              type="checkbox"
+              disabled={busy}
+              checked={Boolean(config.keepBackground)}
+              onChange={(e) => set('keepBackground', e.target.checked)}
+            />
+          </label>
+          <p className="mb-5 text-xs text-muted-foreground">
+            {config.keepBackground
+              ? 'Vectoriza TODO el diseño, fondo incluido (los blancos quedan como capa imprimible). Quitá lo que sobre con “Editar zona → Borrar”.'
+              : 'El fondo liso del borde se quita solo. Activá esto si el fondo es parte del diseño.'}
+          </p>
+
           <label className="mb-1 flex items-center justify-between text-sm font-medium">
             <span>Colores</span>
             <span className="text-muted-foreground">{config.colors}</span>

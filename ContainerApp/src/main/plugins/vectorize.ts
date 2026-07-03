@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import type { ChildProcess } from 'node:child_process'
 import { BrowserWindow, clipboard, dialog, nativeImage, type IpcMain, type WebContents } from 'electron'
-import type { BgProcessResult, RgbColor, VectorizeConfig } from '@shared/types'
+import type { BgProcessResult, RgbColor, VectorAreaMode, VectorizeConfig } from '@shared/types'
 import { runSidecar, tmpRoot } from './sidecar'
 
 /**
@@ -21,10 +21,18 @@ let lastResult: { png: string; svg: string } | null = null
 // SVG base (agrupado por color) del último vectorizado Premium (Recraft). Se cachea para
 // editar las capas SOBRE ÉL (localmente, comando svg-edit) sin volver a llamar a la API.
 let recraftBaseSvg: string | null = null
-// Limpiezas de zona ("fundir al predominante"), en coords NORMALIZADAS (0..1) para sobrevivir
+// Ediciones de zona (fundir/borrar/recolorear), en coords NORMALIZADAS (0..1) para sobrevivir
 // cambios de tamaño. Se re-aplican sobre el PNG tras CADA trazado, así tocar una capa o un
-// setting no borra las limpiezas hechas. Se vacían al cargar otra imagen.
-let areaFills: Array<{ x: number; y: number; w: number; h: number }> = []
+// setting no borra las ediciones hechas. Se vacían al cargar otra imagen.
+let areaFills: Array<{
+  x: number
+  y: number
+  w: number
+  h: number
+  mode: VectorAreaMode
+  /** Color destino (#rrggbb) cuando mode === 'recolor'. */
+  to?: string
+}> = []
 let counter = 0
 
 async function setImage(bytes: ArrayBuffer, name: string): Promise<void> {
@@ -53,7 +61,12 @@ async function applyAreaFills(png: string, sender: WebContents): Promise<string>
       f.w * width
     )},${Math.round(f.h * height)}`
     const r = await runSidecar(
-      ['area-fill', '-i', cur, '-o', out, '--rect', rectArg, '--events'],
+      [
+        'area-fill', '-i', cur, '-o', out, '--rect', rectArg,
+        '--mode', f.mode,
+        ...(f.to ? ['--to', f.to] : []),
+        '--events'
+      ],
       sender,
       PROGRESS_CHANNEL
     )
@@ -97,6 +110,7 @@ async function process(config: VectorizeConfig, sender: WebContents): Promise<Bg
         '--denoise', String(config.denoise ?? 0),
         '--method', config.method,
         '--events',
+        ...(config.keepBackground ? ['--keep-background'] : []),
         ...(config.edit && config.edit.length ? ['--edit', JSON.stringify(config.edit)] : [])
       ]
   const r = await runSidecar(args, sender, PROGRESS_CHANNEL, (c) => {
@@ -137,18 +151,32 @@ async function process(config: VectorizeConfig, sender: WebContents): Promise<Bg
  */
 async function areaFill(
   rect: { x: number; y: number; w: number; h: number },
+  mode: VectorAreaMode,
+  to: string | undefined,
   sender: WebContents
 ): Promise<BgProcessResult> {
   if (!lastResult) return { ok: false, error: { code: 'E_NO_RESULT', message: 'No hay resultado' } }
   // Guardá la zona normalizada (0..1) para re-aplicarla tras futuros trazados.
   const { width, height } = nativeImage.createFromPath(lastResult.png).getSize()
   if (width && height) {
-    areaFills.push({ x: rect.x / width, y: rect.y / height, w: rect.w / width, h: rect.h / height })
+    areaFills.push({
+      x: rect.x / width,
+      y: rect.y / height,
+      w: rect.w / width,
+      h: rect.h / height,
+      mode,
+      to
+    })
   }
   const out = path.join(tmpRoot(TMP), `vector-${++counter}.png`)
   const rectArg = `${Math.round(rect.x)},${Math.round(rect.y)},${Math.round(rect.w)},${Math.round(rect.h)}`
   const r = await runSidecar(
-    ['area-fill', '-i', lastResult.png, '-o', out, '--rect', rectArg, '--events'],
+    [
+      'area-fill', '-i', lastResult.png, '-o', out, '--rect', rectArg,
+      '--mode', mode,
+      ...(to ? ['--to', to] : []),
+      '--events'
+    ],
     sender,
     PROGRESS_CHANNEL
   )
@@ -283,8 +311,10 @@ function clearAreaFills(): { ok: boolean } {
 export function registerVectorizeIpc(ipcMain: IpcMain): void {
   ipcMain.handle('vec:setImage', (_e, bytes: ArrayBuffer, name: string) => setImage(bytes, name))
   ipcMain.handle('vec:process', (e, config: VectorizeConfig) => process(config, e.sender))
-  ipcMain.handle('vec:areaFill', (e, rect: { x: number; y: number; w: number; h: number }) =>
-    areaFill(rect, e.sender)
+  ipcMain.handle(
+    'vec:areaFill',
+    (e, rect: { x: number; y: number; w: number; h: number }, mode?: VectorAreaMode, to?: string) =>
+      areaFill(rect, mode ?? 'fill', to, e.sender)
   )
   ipcMain.handle('vec:clearAreaFills', () => clearAreaFills())
   ipcMain.handle('vec:saveSvg', (_e, name: string) => saveAs('svg', name))

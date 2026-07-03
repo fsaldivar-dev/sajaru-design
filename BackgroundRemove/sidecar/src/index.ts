@@ -328,6 +328,7 @@ program
   .option('--edit <json>', 'JSON [{r,g,b,to?,remove?}] para FIJAR/editar la paleta (reemplazar/quitar)')
   .option('--denoise <n>', 'reducir ruido 0..100 (mediana antes de detectar la paleta)', num, 0)
   .option('--no-merge-thin', 'no fundir colores-franja finos al color vecino')
+  .option('--keep-background', 'NO quitar el fondo uniforme del borde (vectorizar el diseño completo)')
   .addOption(new Option('--method <m>', 'local (Potrace) o recraft (IA premium)').choices(['local', 'recraft']).default('local'))
   .action((opts: Opts, cmd: Command) =>
     runCmd('vectorize', cmd, (ctx) =>
@@ -340,7 +341,8 @@ program
           method: opts.method,
           edit: opts.edit ? JSON.parse(String(opts.edit)) : undefined,
           denoise: Number(opts.denoise),
-          mergeThin: opts.mergeThin
+          mergeThin: opts.mergeThin,
+          keepBackground: Boolean(opts.keepBackground)
         },
         ctx
       )
@@ -425,10 +427,20 @@ program
   .requiredOption('-i, --input <path>', 'PNG de entrada')
   .requiredOption('-o, --output <path>', 'PNG de salida')
   .requiredOption('--rect <x,y,w,h>', 'rectángulo en px del PNG: x,y,w,h')
+  .addOption(new Option('--mode <m>', 'fill (fundir) | erase (borrar dominante) | recolor').choices(['fill', 'erase', 'recolor']).default('fill'))
+  .option('--to <hex>', 'color destino para recolor (#rrggbb)')
   .action((opts: Opts, cmd: Command) =>
     runCmd('area-fill', cmd, (ctx) => {
       const [x, y, w, h] = String(opts.rect).split(',').map(Number)
-      return areaFillCommand({ input: opts.input, output: opts.output, rect: { x, y, w, h } }, ctx)
+      const hex = opts.to ? String(opts.to).replace('#', '') : null
+      const to =
+        hex && /^[0-9a-fA-F]{6}$/.test(hex)
+          ? { r: parseInt(hex.slice(0, 2), 16), g: parseInt(hex.slice(2, 4), 16), b: parseInt(hex.slice(4, 6), 16) }
+          : undefined
+      return areaFillCommand(
+        { input: opts.input, output: opts.output, rect: { x, y, w, h }, mode: opts.mode, to },
+        ctx
+      )
     })
   )
 
