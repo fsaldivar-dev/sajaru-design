@@ -389,12 +389,26 @@ export async function vectorizeStep(
       if ((c[0] - bgR) ** 2 + (c[1] - bgG) ** 2 + (c[2] - bgB) ** 2 < 45 * 45) near++
     }
     if (near / bsamp.length > 0.85) {
-      const TOL2 = 52 * 52
-      const isBg = (i: number): boolean =>
-        (data[i * 4] - bgR) ** 2 + (data[i * 4 + 1] - bgG) ** 2 + (data[i * 4 + 2] - bgB) ** 2 < TOL2
+      // Dos fases para no COMERSE el arte:
+      //  1) Inundación ADAPTATIVA: la tolerancia se MIDE del ruido real del borde (p95 de la
+      //     distancia al color mediano) en vez de un valor fijo. Un fondo limpio (PNG upscaleado,
+      //     ruido ≤7) recibe tol ~13 y el arte casi-negro sobre negro SOBREVIVE; un JPEG ruidoso
+      //     (±15-20) recibe tol ~25 y el fondo sale completo. La tolerancia fija vieja (52) se
+      //     ENCADENABA por tonos cercanos al fondo y se tragaba los verdes sombra del jersey.
+      //  2) Anillo anti-halo (tol 52, 2 pasadas SIN encadenar): solo píxeles PEGADOS a lo ya
+      //     borrado — mata la franja de anti-alias sin poder avanzar hacia el interior del arte.
+      const bdists = bsamp
+        .map((c) => Math.sqrt((c[0] - bgR) ** 2 + (c[1] - bgG) ** 2 + (c[2] - bgB) ** 2))
+        .sort((a, b) => a - b)
+      const p95 = bdists[Math.min(bdists.length - 1, Math.floor(bdists.length * 0.95))]
+      const tolCore = Math.max(10, Math.min(34, Math.round(p95 * 1.3) + 4))
+      const TOL_CORE = tolCore * tolCore
+      const TOL_EDGE = 52 * 52
+      const bgDist2 = (i: number): number =>
+        (data[i * 4] - bgR) ** 2 + (data[i * 4 + 1] - bgG) ** 2 + (data[i * 4 + 2] - bgB) ** 2
       const st: number[] = []
       const visit = (i: number): void => {
-        if (alpha[i] !== 0 && isBg(i)) {
+        if (alpha[i] !== 0 && bgDist2(i) < TOL_CORE) {
           alpha[i] = 0
           st.push(i)
         }
@@ -409,6 +423,24 @@ export async function vectorizeStep(
         if (x < W - 1) visit(p + 1)
         if (y > 0) visit(p - W)
         if (y < H - 1) visit(p + W)
+      }
+      for (let pass = 0; pass < 2; pass++) {
+        const ring: number[] = []
+        for (let p = 0; p < N; p++) {
+          if (alpha[p] === 0 || bgDist2(p) >= TOL_EDGE) continue
+          const x = p % W
+          const y = (p / W) | 0
+          if (
+            (x > 0 && alpha[p - 1] === 0) ||
+            (x < W - 1 && alpha[p + 1] === 0) ||
+            (y > 0 && alpha[p - W] === 0) ||
+            (y < H - 1 && alpha[p + W] === 0)
+          ) {
+            ring.push(p)
+          }
+        }
+        for (const p of ring) alpha[p] = 0
+        if (ring.length === 0) break
       }
       opaque = 0
       for (let i = 0; i < N; i++) if (alpha[i] >= 128) opaque++
