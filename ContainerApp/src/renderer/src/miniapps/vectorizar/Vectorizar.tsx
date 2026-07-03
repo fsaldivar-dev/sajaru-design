@@ -341,6 +341,33 @@ export default function Vectorizar(): React.JSX.Element {
     }
   }
 
+  /** Modo OBJETO (click sin arrastre): borra/recolorea el COMPONENTE CONECTADO del color
+   *  clickeado — sin tocar otros objetos del mismo color (estilo varita de Illustrator). */
+  async function onPickPoint(point: { x: number; y: number }): Promise<void> {
+    if (areaMode === 'fill') return // fundir necesita una zona; el click no aplica
+    const token = ++tokenRef.current
+    setError(null)
+    setProgress({ value: 0, message: areaMode === 'erase' ? 'Borrando objeto…' : 'Recoloreando objeto…' })
+    const r = await window.api.vectorize.objectEdit(
+      point,
+      areaMode,
+      areaMode === 'recolor' ? areaColor : undefined
+    )
+    if (token !== tokenRef.current) return
+    setProgress(null)
+    if (!r.ok) {
+      setError(r.error ?? { code: 'E_AREA', message: 'Falló la edición del objeto' })
+      return
+    }
+    if (r.bytes) {
+      const url = URL.createObjectURL(new Blob([r.bytes], { type: 'image/png' }))
+      if (resultUrlRef.current) URL.revokeObjectURL(resultUrlRef.current)
+      resultUrlRef.current = url
+      setResult({ url })
+      setZones((z) => z + 1)
+    }
+  }
+
   /** Deshace TODAS las limpiezas de zona y re-vectoriza limpio. */
   function clearZones(): void {
     void window.api.vectorize.clearAreaFills()
@@ -456,8 +483,8 @@ export default function Vectorizar(): React.JSX.Element {
                     ? areaMode === 'fill'
                       ? 'Arrastrá un rectángulo → se funde al color predominante'
                       : areaMode === 'erase'
-                        ? 'Arrastrá un rectángulo → su color predominante se BORRA (transparente)'
-                        : 'Arrastrá un rectángulo → su color predominante cambia al elegido'
+                        ? 'CLIC en un objeto lo borra · arrastrá una zona → borra su color predominante'
+                        : 'CLIC en un objeto lo recolorea · arrastrá una zona → recolorea su predominante'
                     : 'Vector · rueda = zoom · mantené “Ver original” para comparar'}
                 </h3>
                 <div className="flex shrink-0 items-center gap-3">
@@ -542,6 +569,7 @@ export default function Vectorizar(): React.JSX.Element {
                   background={CHECKER}
                   selecting={selecting && !busy}
                   onSelectRect={(rect) => void onSelectRect(rect)}
+                  onPickPoint={(p) => void onPickPoint(p)}
                 />
               </div>
               {over && (

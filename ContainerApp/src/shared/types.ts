@@ -368,6 +368,16 @@ export interface SajaruApi {
       mode?: VectorAreaMode,
       to?: string
     ) => Promise<BgProcessResult>
+    /**
+     * Modo OBJETO (estilo Illustrator): el click selecciona el COMPONENTE CONECTADO del
+     * color clickeado (la isla) y lo borra o recolorea — sin tocar otros objetos del mismo
+     * color. Persiste y se re-aplica al re-vectorizar, igual que las zonas.
+     */
+    objectEdit: (
+      point: { x: number; y: number },
+      mode: 'erase' | 'recolor',
+      to?: string
+    ) => Promise<BgProcessResult>
     /** Borra todas las limpiezas de zona guardadas. */
     clearAreaFills: () => Promise<{ ok: boolean }>
     saveSvg: (suggestedName: string) => Promise<{ saved: boolean; path?: string }>

@@ -21,7 +21,14 @@ export async function areaFillCommand(
   opts: {
     input: string
     output: string
-    rect: { x: number; y: number; w: number; h: number }
+    /** Zona rectangular (modo zona). Alternativa: `point` (modo OBJETO). */
+    rect?: { x: number; y: number; w: number; h: number }
+    /**
+     * Modo OBJETO (estilo Illustrator): el punto clickeado selecciona el COMPONENTE
+     * CONECTADO de ese color (la isla), no todo el color global. Con esto "recolorear el
+     * título" no toca la barba aunque ambos sean blancos.
+     */
+    point?: { x: number; y: number }
     mode?: AreaMode
     /** Color destino para `recolor` (r,g,b 0-255). */
     to?: { r: number; g: number; b: number }
@@ -35,6 +42,76 @@ export async function areaFillCommand(
   const W = meta.width ?? 0
   const H = meta.height ?? 0
   const { data } = await src.ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+
+  // ---- MODO OBJETO: click → componente conectado del color clickeado ----
+  if (opts.point) {
+    const px = Math.max(0, Math.min(W - 1, Math.round(opts.point.x)))
+    const py = Math.max(0, Math.min(H - 1, Math.round(opts.point.y)))
+    const pi = py * W + px
+    if (data[pi * 4 + 3] < 128) {
+      await fs.copyFile(opts.input, opts.output)
+      return { output: opts.output, color: null }
+    }
+    const cr = data[pi * 4]
+    const cg = data[pi * 4 + 1]
+    const cb = data[pi * 4 + 2]
+    // El PNG vectorizado es de colores PLANOS: tolerancia corta alcanza y no salta de capa.
+    const TOL2 = 40 * 40
+    const same = (i: number): boolean =>
+      data[i * 4 + 3] >= 128 &&
+      (data[i * 4] - cr) ** 2 + (data[i * 4 + 1] - cg) ** 2 + (data[i * 4 + 2] - cb) ** 2 < TOL2
+    ctx.progress('vectorize', 0.5, mode === 'erase' ? 'Borrando el objeto' : 'Recoloreando el objeto')
+    const inComp = new Uint8Array(W * H)
+    const st = [pi]
+    inComp[pi] = 1
+    while (st.length) {
+      const p = st.pop() as number
+      const x = p % W
+      const y = (p / W) | 0
+      for (const q of [x > 0 ? p - 1 : -1, x < W - 1 ? p + 1 : -1, y > 0 ? p - W : -1, y < H - 1 ? p + W : -1]) {
+        if (q >= 0 && !inComp[q] && same(q)) {
+          inComp[q] = 1
+          st.push(q)
+        }
+      }
+    }
+    // Anillo de 1px para el anti-alias del borde del objeto (adjacente + parecido, sin encadenar).
+    const RING2 = 95 * 95
+    const ring: number[] = []
+    for (let p = 0; p < W * H; p++) {
+      if (inComp[p] || data[p * 4 + 3] < 128) continue
+      const x = p % W
+      const y = (p / W) | 0
+      const adj =
+        (x > 0 && inComp[p - 1]) || (x < W - 1 && inComp[p + 1]) || (y > 0 && inComp[p - W]) || (y < H - 1 && inComp[p + W])
+      if (!adj) continue
+      const d = (data[p * 4] - cr) ** 2 + (data[p * 4 + 1] - cg) ** 2 + (data[p * 4 + 2] - cb) ** 2
+      if (d < RING2) ring.push(p)
+    }
+    for (const p of ring) inComp[p] = 1
+    for (let p = 0; p < W * H; p++) {
+      if (!inComp[p]) continue
+      if (mode === 'erase') data[p * 4 + 3] = 0
+      else if (opts.to) {
+        data[p * 4] = opts.to.r
+        data[p * 4 + 1] = opts.to.g
+        data[p * 4 + 2] = opts.to.b
+      }
+    }
+    const outBuf = await sharp(data, { raw: { width: W, height: H, channels: 4 } }).png().toBuffer()
+    await fs.mkdir(path.dirname(opts.output), { recursive: true })
+    await fs.writeFile(opts.output, outBuf)
+    ctx.progress('vectorize', 1)
+    return {
+      output: opts.output,
+      color: '#' + [cr, cg, cb].map((v) => v.toString(16).padStart(2, '0')).join('')
+    }
+  }
+
+  if (!opts.rect) {
+    await fs.copyFile(opts.input, opts.output)
+    return { output: opts.output, color: null }
+  }
 
   const rx = Math.max(0, Math.min(W, Math.round(opts.rect.x)))
   const ry = Math.max(0, Math.min(H, Math.round(opts.rect.y)))

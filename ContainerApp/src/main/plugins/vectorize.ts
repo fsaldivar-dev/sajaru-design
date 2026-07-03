@@ -21,14 +21,18 @@ let lastResult: { png: string; svg: string } | null = null
 // SVG base (agrupado por color) del último vectorizado Premium (Recraft). Se cachea para
 // editar las capas SOBRE ÉL (localmente, comando svg-edit) sin volver a llamar a la API.
 let recraftBaseSvg: string | null = null
-// Ediciones de zona (fundir/borrar/recolorear), en coords NORMALIZADAS (0..1) para sobrevivir
-// cambios de tamaño. Se re-aplican sobre el PNG tras CADA trazado, así tocar una capa o un
-// setting no borra las ediciones hechas. Se vacían al cargar otra imagen.
+// Ediciones de zona/objeto (fundir/borrar/recolorear), en coords NORMALIZADAS (0..1) para
+// sobrevivir cambios de tamaño. Zona = rect {x,y,w,h}; objeto = punto {px,py} (componente
+// conectado del color clickeado). Se re-aplican sobre el PNG tras CADA trazado, así tocar
+// una capa o un setting no borra las ediciones hechas. Se vacían al cargar otra imagen.
 let areaFills: Array<{
-  x: number
-  y: number
-  w: number
-  h: number
+  x?: number
+  y?: number
+  w?: number
+  h?: number
+  /** Punto normalizado del modo OBJETO (excluyente con el rect). */
+  px?: number
+  py?: number
   mode: VectorAreaMode
   /** Color destino (#rrggbb) cuando mode === 'recolor'. */
   to?: string
@@ -57,12 +61,18 @@ async function applyAreaFills(png: string, sender: WebContents): Promise<string>
     const { width, height } = nativeImage.createFromPath(cur).getSize()
     if (!width || !height) break
     const out = path.join(tmpRoot(TMP), `vector-${++counter}.png`)
-    const rectArg = `${Math.round(f.x * width)},${Math.round(f.y * height)},${Math.round(
-      f.w * width
-    )},${Math.round(f.h * height)}`
+    const region =
+      f.px !== undefined && f.py !== undefined
+        ? ['--point', `${Math.round(f.px * width)},${Math.round(f.py * height)}`]
+        : [
+            '--rect',
+            `${Math.round((f.x ?? 0) * width)},${Math.round((f.y ?? 0) * height)},${Math.round(
+              (f.w ?? 0) * width
+            )},${Math.round((f.h ?? 0) * height)}`
+          ]
     const r = await runSidecar(
       [
-        'area-fill', '-i', cur, '-o', out, '--rect', rectArg,
+        'area-fill', '-i', cur, '-o', out, ...region,
         '--mode', f.mode,
         ...(f.to ? ['--to', f.to] : []),
         '--events'
@@ -194,6 +204,44 @@ async function areaFill(
   }
 }
 
+/** Modo OBJETO: click → borra/recolorea el componente conectado del color clickeado.
+ *  Persiste junto a las zonas (se re-aplica tras re-trazados). `point` en px del PNG. */
+async function objectEdit(
+  point: { x: number; y: number },
+  mode: 'erase' | 'recolor',
+  to: string | undefined,
+  sender: WebContents
+): Promise<BgProcessResult> {
+  if (!lastResult) return { ok: false, error: { code: 'E_NO_RESULT', message: 'No hay resultado' } }
+  const { width, height } = nativeImage.createFromPath(lastResult.png).getSize()
+  if (width && height) {
+    areaFills.push({ px: point.x / width, py: point.y / height, mode, to })
+  }
+  const out = path.join(tmpRoot(TMP), `vector-${++counter}.png`)
+  const r = await runSidecar(
+    [
+      'area-fill', '-i', lastResult.png, '-o', out,
+      '--point', `${Math.round(point.x)},${Math.round(point.y)}`,
+      '--mode', mode,
+      ...(to ? ['--to', to] : []),
+      '--events'
+    ],
+    sender,
+    PROGRESS_CHANNEL
+  )
+  if (!r.ok) return { ok: false, error: r.error }
+  try {
+    const data = r.data as { output?: string } | undefined
+    const pngPath = String(data?.output ?? out)
+    const buf = await fs.readFile(pngPath)
+    lastResult = { png: pngPath, svg: lastResult.svg }
+    const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+    return { ok: true, bytes: ab, outputName: path.basename(pngPath), format: 'png' }
+  } catch (e) {
+    return { ok: false, error: { code: 'E_READ', message: (e as Error).message } }
+  }
+}
+
 async function saveAs(
   kind: 'svg' | 'png',
   suggestedName: string
@@ -315,6 +363,11 @@ export function registerVectorizeIpc(ipcMain: IpcMain): void {
     'vec:areaFill',
     (e, rect: { x: number; y: number; w: number; h: number }, mode?: VectorAreaMode, to?: string) =>
       areaFill(rect, mode ?? 'fill', to, e.sender)
+  )
+  ipcMain.handle(
+    'vec:objectEdit',
+    (e, point: { x: number; y: number }, mode: 'erase' | 'recolor', to?: string) =>
+      objectEdit(point, mode, to, e.sender)
   )
   ipcMain.handle('vec:clearAreaFills', () => clearAreaFills())
   ipcMain.handle('vec:saveSvg', (_e, name: string) => saveAs('svg', name))

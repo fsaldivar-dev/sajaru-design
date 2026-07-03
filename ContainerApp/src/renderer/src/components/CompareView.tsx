@@ -18,7 +18,8 @@ export function CompareView({
   afterLabel = 'Resultado',
   background,
   selecting = false,
-  onSelectRect
+  onSelectRect,
+  onPickPoint
 }: {
   before: string
   after?: string | null
@@ -29,6 +30,9 @@ export function CompareView({
   selecting?: boolean
   /** Rectángulo elegido, en píxeles de la imagen `after` (no del canvas). */
   onSelectRect?: (rect: { x: number; y: number; w: number; h: number }) => void
+  /** CLICK (sin arrastre) en modo selección: punto en píxeles de la imagen `after`.
+   *  Lo usa el modo OBJETO (seleccionar el componente conectado del color clickeado). */
+  onPickPoint?: (point: { x: number; y: number }) => void
 }) {
   const [scale, setScale] = useState(1)
   const [off, setOff] = useState({ x: 0, y: 0 })
@@ -125,7 +129,7 @@ export function CompareView({
     const img = afterImg.current
     const cur = sel
     setSel(null)
-    if (!img || !cur || !onSelectRect) return
+    if (!img || !cur || (!onSelectRect && !onPickPoint)) return
     const W = size.w
     const H = size.h
     const s = Math.min(W / img.naturalWidth, H / img.naturalHeight)
@@ -141,7 +145,14 @@ export function CompareView({
     const y = Math.max(0, Math.min(a.y, b.y))
     const w = Math.min(img.naturalWidth, Math.max(a.x, b.x)) - x
     const h = Math.min(img.naturalHeight, Math.max(a.y, b.y)) - y
-    if (w > 3 && h > 3) onSelectRect({ x, y, w, h })
+    if (w > 3 && h > 3) {
+      onSelectRect?.({ x, y, w, h })
+    } else if (onPickPoint) {
+      // CLICK (sin arrastre) = seleccionar OBJETO: el punto en px de la imagen.
+      const px = Math.max(0, Math.min(img.naturalWidth - 1, a.x))
+      const py = Math.max(0, Math.min(img.naturalHeight - 1, a.y))
+      onPickPoint({ x: px, y: py })
+    }
   }
 
   const reset = (): void => {

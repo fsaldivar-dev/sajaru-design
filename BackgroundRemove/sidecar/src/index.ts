@@ -426,19 +426,32 @@ program
   .command('area-fill')
   .requiredOption('-i, --input <path>', 'PNG de entrada')
   .requiredOption('-o, --output <path>', 'PNG de salida')
-  .requiredOption('--rect <x,y,w,h>', 'rectángulo en px del PNG: x,y,w,h')
-  .addOption(new Option('--mode <m>', 'fill (fundir) | erase (borrar dominante) | recolor').choices(['fill', 'erase', 'recolor']).default('fill'))
+  .option('--rect <x,y,w,h>', 'ZONA rectangular en px del PNG: x,y,w,h')
+  .option('--point <x,y>', 'OBJETO: click en px — selecciona el componente conectado de ese color')
+  .addOption(new Option('--mode <m>', 'fill (fundir) | erase (borrar) | recolor').choices(['fill', 'erase', 'recolor']).default('fill'))
   .option('--to <hex>', 'color destino para recolor (#rrggbb)')
   .action((opts: Opts, cmd: Command) =>
     runCmd('area-fill', cmd, (ctx) => {
-      const [x, y, w, h] = String(opts.rect).split(',').map(Number)
+      if (!opts.rect && !opts.point) throw new Error('Falta --rect (zona) o --point (objeto)')
+      const rect = opts.rect
+        ? (() => {
+            const [x, y, w, h] = String(opts.rect).split(',').map(Number)
+            return { x, y, w, h }
+          })()
+        : undefined
+      const point = opts.point
+        ? (() => {
+            const [x, y] = String(opts.point).split(',').map(Number)
+            return { x, y }
+          })()
+        : undefined
       const hex = opts.to ? String(opts.to).replace('#', '') : null
       const to =
         hex && /^[0-9a-fA-F]{6}$/.test(hex)
           ? { r: parseInt(hex.slice(0, 2), 16), g: parseInt(hex.slice(2, 4), 16), b: parseInt(hex.slice(4, 6), 16) }
           : undefined
       return areaFillCommand(
-        { input: opts.input, output: opts.output, rect: { x, y, w, h }, mode: opts.mode, to },
+        { input: opts.input, output: opts.output, rect, point, mode: opts.mode, to },
         ctx
       )
     })
