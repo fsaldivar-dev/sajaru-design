@@ -45,6 +45,8 @@ const api: SajaruApi = {
       ipcRenderer.invoke('vec:saveLayerSvg', color, suggestedName),
     saveVector: (format, suggestedName) =>
       ipcRenderer.invoke('vec:saveVector', format, suggestedName),
+    exportGroupSvg: (suggestedName, parts) =>
+      ipcRenderer.invoke('vec:exportGroupSvg', suggestedName, parts),
     copyResult: () => ipcRenderer.invoke('vec:copyResult'),
     onProgress: (cb) => {
       const listener = (_e: IpcRendererEvent, ev: BgProgress): void => cb(ev)

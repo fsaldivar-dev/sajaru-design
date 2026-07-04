@@ -567,6 +567,95 @@ async function saveVector(
   return { saved: true, path: filePath }
 }
 
+/** Nombre de grupo → id XML seguro. */
+function svgId(name: string, i: number): string {
+  const base = name
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-zA-Z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+  return base ? `${base}` : `capa-${i + 1}`
+}
+const escXml = (s: string): string =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+
+/**
+ * Exporta UN SVG con los GRUPOS del diseñador como capas nombradas (`<g id="Gorrito">`):
+ * particiona el raster editado por los esténciles (partes disjuntas, el renderer las
+ * manda bottom→top con "Resto" primero), traza CADA partición con la receta de
+ * consolidación y fusiona los cuerpos en un solo `<svg>`. Illustrator/Affinity lo abren
+ * con las capas/grupos del diseñador, no una sopa de colores.
+ */
+async function exportGroupSvg(
+  suggestedName: string,
+  parts: Array<{ name: string; maskPng: ArrayBuffer }>,
+  sender: WebContents
+): Promise<{ saved: boolean; path?: string; error?: string }> {
+  if (!lastResult || !lastTrace) return { saved: false, error: 'No hay resultado' }
+  if (lastTrace.method !== 'local') return { saved: false, error: 'Disponible con motor Local' }
+  if (!parts.length) return { saved: false, error: 'No hay grupos para exportar' }
+  const win = BrowserWindow.getFocusedWindow()
+  const opts = { defaultPath: suggestedName, filters: [{ name: 'SVG', extensions: ['svg'] }] }
+  const { canceled, filePath } = win
+    ? await dialog.showSaveDialog(win, opts)
+    : await dialog.showSaveDialog(opts)
+  if (canceled || !filePath) return { saved: false }
+  const src = editedRaster ?? lastResult.png
+  const protect = [
+    ...new Set(areaFills.filter((f) => (f.mode === 'recolor' || f.mode === 'colorize') && f.to).map((f) => f.to as string))
+  ]
+  let header: string | null = null
+  const bodies: string[] = []
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i]
+    const maskPath = path.join(tmpRoot(TMP), `gexp-mask-${++counter}.png`)
+    await fs.writeFile(maskPath, Buffer.from(part.maskPng))
+    // 1) extraer la partición: borrar todo lo de FUERA del esténcil
+    const partPng = path.join(tmpRoot(TMP), `gexp-part-${++counter}.png`)
+    const rExtract = await runSidecar(
+      ['area-fill', '-i', src, '-o', partPng, '--mask', maskPath, '--mask-outside', '--mode', 'erase', '--events'],
+      sender,
+      PROGRESS_CHANNEL
+    )
+    if (!rExtract.ok) return { saved: false, error: rExtract.error?.message }
+    // 2) trazar la partición (misma receta que la consolidación)
+    const partVec = path.join(tmpRoot(TMP), `gexp-vec-${++counter}.png`)
+    const rTrace = await runSidecar(
+      [
+        'vectorize', '-i', partPng, '-o', partVec,
+        '--size', String(lastTrace.size),
+        '--denoise', '0',
+        '--keep-background',
+        '--assume-flat',
+        '--palette-from-input',
+        ...(protect.length ? ['--protect-colors', protect.join(',')] : []),
+        '--events'
+      ],
+      sender,
+      PROGRESS_CHANNEL
+    )
+    if (!rTrace.ok) return { saved: false, error: rTrace.error?.message }
+    const svgPath = String(
+      (rTrace.data as { svg?: string } | undefined)?.svg ?? partVec.replace(/\.[^.]+$/, '.svg')
+    )
+    const svg = await fs.readFile(svgPath, 'utf8')
+    const open = svg.match(/<svg\b[^>]*>/i)
+    if (!open) continue
+    if (!header) header = open[0]
+    const inner = svg.slice((open.index ?? 0) + open[0].length).replace(/<\/svg>\s*$/i, '')
+    bodies.push(
+      `<g id="${svgId(part.name, i)}" inkscape:label="${escXml(part.name)}" data-name="${escXml(part.name)}">${inner}</g>`
+    )
+  }
+  if (!header || !bodies.length) return { saved: false, error: 'No se pudo trazar ninguna capa' }
+  // xmlns de inkscape para que el label sea válido (Illustrator/Affinity lo ignoran sin drama)
+  const headerNs = header.includes('xmlns:inkscape')
+    ? header
+    : header.replace(/<svg\b/i, '<svg xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"')
+  await fs.writeFile(filePath, `${headerNs}\n${bodies.join('\n')}\n</svg>`, 'utf8')
+  return { saved: true, path: filePath }
+}
+
 /** Copia el PNG vectorizado al portapapeles (para pegar en apps de diseño). */
 function copyResult(): { copied: boolean } {
   if (!lastResult) return { copied: false }
@@ -642,6 +731,11 @@ export function registerVectorizeIpc(ipcMain: IpcMain): void {
   )
   ipcMain.handle('vec:saveVector', (e, format: 'pdf' | 'eps', name: string) =>
     enqueue(() => saveVector(format, name, e.sender))
+  )
+  ipcMain.handle(
+    'vec:exportGroupSvg',
+    (e, name: string, parts: Array<{ name: string; maskPng: ArrayBuffer }>) =>
+      enqueue(() => exportGroupSvg(name, parts, e.sender))
   )
   ipcMain.handle('vec:copyResult', () => copyResult())
 }

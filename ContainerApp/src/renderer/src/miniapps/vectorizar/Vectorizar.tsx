@@ -701,6 +701,61 @@ export default function Vectorizar(): React.JSX.Element {
     if (token === tokenRef.current) setProgress(null)
   }
 
+  /** Export "SVG por grupos": UN SVG donde cada grupo del diseñador es una capa nombrada
+   *  (`<g id="Gorrito">`) — Illustrator/Affinity lo abren con TUS capas. Particiona el
+   *  raster editado por los esténciles (disjuntos por orden del panel; lo no agrupado va
+   *  a la capa "Resto", abajo) y traza cada partición. */
+  async function onExportGroupSvg(): Promise<void> {
+    const raster = rasterRef.current
+    if (!result || !raster || !groups.length || busy) return
+    const token = ++tokenRef.current
+    setError(null)
+    setProgress({ value: 0, message: `Exportando ${groups.length + 1} capas (esto traza cada grupo)…` })
+    try {
+      const N = raster.w * raster.h
+      const assigned = new Uint8Array(N)
+      const parts: Array<{ name: string; maskPng: ArrayBuffer }> = []
+      // grupos en el orden del panel (el 1º queda arriba en el archivo → lo agregamos al final)
+      const groupParts: Array<{ name: string; mask: Uint8Array }> = []
+      for (const g of groups) {
+        const m = await resolveGroupMask(g, raster)
+        if (!m) continue
+        const part = new Uint8Array(N)
+        let area = 0
+        for (let p = 0; p < N; p++) {
+          if (m[p] && !assigned[p] && raster.data[p * 4 + 3] >= 128) {
+            part[p] = 1
+            assigned[p] = 1
+            area++
+          }
+        }
+        if (area) groupParts.push({ name: g.name, mask: part })
+      }
+      const resto = new Uint8Array(N)
+      let restoArea = 0
+      for (let p = 0; p < N; p++) {
+        if (!assigned[p] && raster.data[p * 4 + 3] >= 128) {
+          resto[p] = 1
+          restoArea++
+        }
+      }
+      // bottom → top: Resto primero, después los grupos en orden inverso del panel
+      if (restoArea) parts.push({ name: 'Resto', maskPng: await maskToPngBytes(raster.w, raster.h, resto) })
+      for (let i = groupParts.length - 1; i >= 0; i--) {
+        parts.push({ name: groupParts[i].name, maskPng: await maskToPngBytes(raster.w, raster.h, groupParts[i].mask) })
+      }
+      if (!parts.length) {
+        setError({ code: 'E_GROUPS', message: 'Los grupos no tienen píxeles en el diseño actual' })
+        return
+      }
+      const r = await window.api.vectorize.exportGroupSvg(`${baseName()}-capas.svg`, parts)
+      if (token !== tokenRef.current) return
+      if (!r.saved && r.error) setError({ code: 'E_EXPORT', message: r.error })
+    } finally {
+      if (token === tokenRef.current) setProgress(null)
+    }
+  }
+
   /** Exporta el vector completo a PDF (vectorial) o EPS (Ghostscript). Surface del error
    *  si falta gs para EPS. */
   async function onSaveVector(format: 'pdf' | 'eps'): Promise<void> {
@@ -1247,6 +1302,15 @@ export default function Vectorizar(): React.JSX.Element {
                   {(
                     [
                       { label: 'Guardar SVG', note: 'vector real', run: () => void onExportSvg() },
+                      ...(groups.length > 0 && canEditRaster
+                        ? ([
+                            {
+                              label: 'SVG por grupos',
+                              note: 'Illustrator / Affinity',
+                              run: () => void onExportGroupSvg()
+                            }
+                          ] as const)
+                        : []),
                       { label: 'PDF', note: 'imprenta / plotter', run: () => void onSaveVector('pdf') },
                       { label: 'EPS', note: 'imprenta / plotter', run: () => void onSaveVector('eps') },
                       { label: 'Guardar PNG', note: `${config.size}px`, run: () => void window.api.vectorize.savePng(`${baseName()}-vector.png`) },

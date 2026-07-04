@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { Eye, Minus, Plus } from 'lucide-react'
 
+// Zoom hasta 64×: a 2048px de lado, 64× = ver píxeles individuales de a bloques — el
+// nivel "precisión de mota" que pide el retoque fino (12× se quedaba corto para letras).
 const MIN = 1
-const MAX = 12
+const MAX = 64
 const clamp = (n: number): number => Math.min(MAX, Math.max(MIN, n))
 
 /** Clic (sin arrastre) sobre un píxel del resultado, en cualquier modo. */

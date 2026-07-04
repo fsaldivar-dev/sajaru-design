@@ -440,6 +440,7 @@ program
   .option('--rect <x,y,w,h>', 'ZONA rectangular en px del PNG: x,y,w,h')
   .option('--point <x,y>', 'OBJETO: click en px — selecciona el componente conectado de ese color')
   .option('--mask <path>', 'MÁSCARA: PNG con alfa>=128 en los píxeles a editar (selección libre)')
+  .option('--mask-outside', 'aplicar el modo FUERA de la máscara (erase = extraer la partición)')
   .addOption(new Option('--mode <m>', 'fill (fundir) | erase (borrar) | recolor | colorize (teñir conservando sombreado)').choices(['fill', 'erase', 'recolor', 'colorize']).default('fill'))
   .option('--to <hex>', 'color destino para recolor/colorize (#rrggbb)')
   .action((opts: Opts, cmd: Command) =>
@@ -463,7 +464,7 @@ program
           ? { r: parseInt(hex.slice(0, 2), 16), g: parseInt(hex.slice(2, 4), 16), b: parseInt(hex.slice(4, 6), 16) }
           : undefined
       return areaFillCommand(
-        { input: opts.input, output: opts.output, rect, point, mask: opts.mask ? String(opts.mask) : undefined, mode: opts.mode, to },
+        { input: opts.input, output: opts.output, rect, point, mask: opts.mask ? String(opts.mask) : undefined, maskOutside: Boolean(opts.maskOutside), mode: opts.mode, to },
         ctx
       )
     })

@@ -426,6 +426,13 @@ export interface SajaruApi {
       format: 'pdf' | 'eps',
       suggestedName: string
     ) => Promise<{ saved: boolean; path?: string; error?: string }>
+    /** Exporta UN SVG con los GRUPOS como capas nombradas (`<g id="Gorrito">`): particiones
+     *  disjuntas del raster editado (bottom→top, "Resto" primero), trazadas y fusionadas.
+     *  Illustrator/Affinity lo abren con las capas del diseñador. */
+    exportGroupSvg: (
+      suggestedName: string,
+      parts: Array<{ name: string; maskPng: ArrayBuffer }>
+    ) => Promise<{ saved: boolean; path?: string; error?: string }>
     copyResult: () => Promise<{ copied: boolean }>
     onProgress: (cb: (ev: BgProgress) => void) => () => void
   }

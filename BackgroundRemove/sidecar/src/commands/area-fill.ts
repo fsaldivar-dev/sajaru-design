@@ -92,11 +92,14 @@ export async function areaFillCommand(
     point?: { x: number; y: number }
     /**
      * Modo MÁSCARA (selección libre del renderer: marquesina por color, componente menos
-     * una zona restada, etc.): PNG cuyo canal alfa>=128 (o luminancia>=128 si es opaco)
-     * marca los píxeles a editar, TAL CUAL — WYSIWYG exacto con lo resaltado. Se re-escala
-     * (nearest) si el tamaño no coincide con el input.
+     * una zona restada, etc.): PNG cuyo canal alfa>=128 marca los píxeles a editar, TAL
+     * CUAL — WYSIWYG exacto con lo resaltado. Se re-escala (nearest) si el tamaño no
+     * coincide con el input.
      */
     mask?: string
+    /** Aplica el modo FUERA de la máscara (erase+outside = extraer la partición del
+     *  grupo: queda solo lo enmascarado). */
+    maskOutside?: boolean
     mode?: AreaMode
     /** Color destino para `recolor` (r,g,b 0-255). */
     to?: { r: number; g: number; b: number }
@@ -128,7 +131,8 @@ export async function areaFillCommand(
           })()
         : null
     for (let p = 0; p < W * H; p++) {
-      if (md[p * 4 + 3] < 128 || data[p * 4 + 3] < 128) continue
+      const inMask = md[p * 4 + 3] >= 128
+      if ((opts.maskOutside ? inMask : !inMask) || data[p * 4 + 3] < 128) continue
       const i = p * 4
       if (mode === 'erase') data[i + 3] = 0
       else if (tint) {
