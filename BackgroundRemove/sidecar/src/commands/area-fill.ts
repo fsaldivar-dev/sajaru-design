@@ -43,12 +43,16 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
 /** Mapa de teñido: pixel → mismo tono/saturación del destino, luminosidad corrida para
  *  que el DOMINANTE caiga exacto en el destino y el sombreado se conserve. */
 function makeColorize(base: { r: number; g: number; b: number }, to: { r: number; g: number; b: number }) {
-  const [, , bl] = rgbToHsl(base.r, base.g, base.b)
+  // El dominante (bl) mapea EXACTO al destino (tl). En vez de un offset lineal (que con un
+  // dominante casi-negro corría los brillos por encima de 1 y los reventaba a BLANCO puro),
+  // COMPRIMIMOS cada tramo para que quepa sin clip: [0..bl]→[0..tl] y [bl..1]→[tl..1]. Así
+  // el modelado se conserva (sombra<base<brillo, monótono) y nunca sale blanco plano.
+  const bl = Math.max(0.001, Math.min(0.999, rgbToHsl(base.r, base.g, base.b)[2]))
   const [th, ts, tl] = rgbToHsl(to.r, to.g, to.b)
   return (r: number, g: number, b: number): [number, number, number] => {
-    const [, , l] = rgbToHsl(r, g, b)
-    const l2 = Math.max(0, Math.min(1, tl + (l - bl)))
-    return hslToRgb(th, ts, l2)
+    const l = rgbToHsl(r, g, b)[2]
+    const l2 = l <= bl ? (tl * l) / bl : tl + ((1 - tl) * (l - bl)) / (1 - bl)
+    return hslToRgb(th, ts, Math.max(0, Math.min(1, l2)))
   }
 }
 /** Color dominante (cuantizado 5 bits) entre los píxeles opacos marcados por `on`. */

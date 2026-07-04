@@ -257,6 +257,31 @@ export function colorMask(raster: Raster, rgb: { r: number; g: number; b: number
   return { seed, hex, mask, bbox: { x0, y0, x1, y1 }, area }
 }
 
+/** Dilata la máscara `r` px (4-conexión). Para el export por grupos: si cada partición se
+ *  agranda 1px, las capas adyacentes SE SOLAPAN en la frontera y el apilado tapa la costura
+ *  de 1px que Potrace dejaba al trazar cada partición por separado. */
+export function dilateMask(mask: Uint8Array, w: number, h: number, r = 1): Uint8Array {
+  let cur = mask
+  for (let step = 0; step < r; step++) {
+    const next = new Uint8Array(cur)
+    for (let p = 0; p < w * h; p++) {
+      if (cur[p]) continue
+      const x = p % w
+      const y = (p / w) | 0
+      if (
+        (x > 0 && cur[p - 1]) ||
+        (x < w - 1 && cur[p + 1]) ||
+        (y > 0 && cur[p - w]) ||
+        (y < h - 1 && cur[p + w])
+      ) {
+        next[p] = 1
+      }
+    }
+    cur = next
+  }
+  return cur
+}
+
 /** Máscara de TODOS los píxeles opacos del rect (para RESTAR una zona de la selección). */
 export function rectMask(raster: Raster, rect: { x: number; y: number; w: number; h: number }): Uint8Array | null {
   const { data, w, h } = raster

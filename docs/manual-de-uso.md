@@ -259,27 +259,33 @@ La herramienta te tira **sugerencias** según lo que detecta (por ejemplo, te pr
    - **Cantidad de colores** de la paleta (hasta 24).
    - **Reducción de ruido**.
    - **Conservar fondo**: vectoriza TODO (fondo incluido) para el flujo "vectorizo todo y después elimino lo que sobra". Los blancos quedan como capa imprimible (tinta blanca DTF).
-4. **Navegá el lienzo** como en Figma/Illustrator: **scroll** (dos dedos) = desplazar · **pinch** o **⌘ + scroll** = zoom hacia el cursor · **espacio + arrastrar** = mano (en cualquier modo) · **doble clic** = ajustar a la ventana. La barra de estado (abajo del lienzo) muestra el zoom y la ayuda de la herramienta activa.
+4. **Navegá el lienzo** como en Figma/Illustrator: **scroll** (dos dedos) = desplazar · **pinch** o **⌘ + scroll** = zoom hacia el cursor (hasta **64×**, para retocar al pixel) · **espacio + arrastrar** = mano (en cualquier modo) · **doble clic** = ajustar a la ventana. La barra de estado (abajo del lienzo) muestra el zoom y la ayuda de la herramienta activa.
 5. **Seleccioná y editá** (estilo Illustrator — la selección siempre **se resalta en celeste** antes de tocar nada):
    - **Clic sobre un objeto** (una letra, el gorro, un escudo) = selecciona esa pieza conectada.
    - **Arrastrá un marco** = selecciona las **FIGURAS contenidas en el marco, con TODOS sus colores** (la letra entra entera: cuerpo, sombras y brillos). El fondo y lo que fluye fuera del marco quedan afuera. En la barra podés cambiar a **"Un color"** (solo el color dominante del marco — para cortar la playera del gorro); si el marco no contiene ninguna figura, cae solo a ese modo.
    - **⌥ (alt) + arrastrá** = **RESTA** esa zona de la selección — así separás la playera del gorro aunque compartan color y se toquen: clic en la playera, ⌥ sobre el gorro, listo.
    - **Shift** suma (clic o marco); **Escape** o clic en vacío deselecciona.
-   - Con la selección activa, la **barra de acciones**: **Recolorear**, **Borrar** (tecla Supr), **Emparejar** (la zona del marco se funde a su color dominante — tapa suciedad y líneas de borde) o **Guardar como grupo**.
-6. **Grupos con nombre**: guardá CUALQUIER selección como grupo ("Letras", "Gorro", "Barba"…) — de clics (el grupo sigue a los objetos aunque los recolorees) o de marcos/restas (queda como esténcil de la zona). En el panel **Grupos**: tocá el **swatch** y se recolorea **todo el grupo** de una; pasá el mouse por la fila y se resalta en el lienzo; renombralo escribiendo sobre el nombre. Los grupos sobreviven re-trazados.
-7. **Editá la paleta** (panel **Capas**): cambiar el color de una capa cambia **todos** los objetos de ese color; también podés ocultar capas, verlas solas o bajarlas por separado.
+   - Con la selección activa, la **barra de acciones**: **Teñir** (mueve el tono conservando sombras y brillos — para arte con sombreado), **Aplanar** (un color plano exacto — para tintas planas de logo), **Borrar** (tecla Supr), **Emparejar** (la zona del marco se funde a su color dominante — tapa suciedad y líneas de borde), **Guardar como grupo** o **Añadir a** un grupo existente.
+6. **Grupos con nombre** ("Letras", "Gorro", "Barba"…). Guardá cualquier selección como grupo — queda como **esténcil** (no se funde con vecinos del mismo color al recolorear). En el panel **Grupos**, cada fila tiene:
+   - **▸ (flechita)**: despliega **los colores del grupo** — tocá uno y cambia **solo ese color dentro del grupo** (el gris de la banda del gorro sin tocar los grises del resto).
+   - **Swatch**: **tiñe TODO el grupo** de una (conserva el sombreado).
+   - **Ojo**: apartar (no se ve ni se selecciona, para afinar el resto). **Candado**: protegido (ni clic ni marco lo agarran). Al pasar el mouse por la fila aparecen **⌖** (recuperar el grupo como selección para afinarlo) y la **papelera**.
+   - Los grupos sobreviven re-trazados.
+7. **Editá la paleta** (panel **Capas**): cambiar el color de una capa cambia **todos** los objetos de ese color. Cada capa tiene **candado** (protegerla del marco/clic), **ojo** (ocultar), **ver sola** y **exportar la capa**; tocá el **HEX** para seleccionar todos esos píxeles en el lienzo.
 8. **Deshacer de verdad**: **⌘Z** deshace LA última acción — sea de capas, de selección o de zona — de a un paso (un grupo entero cuenta como un paso). **⌘⇧Z** rehace. **Quitar ediciones (N)** borra todas las ediciones raster de una (esto sí no tiene deshacer: pide confirmación).
-9. Exportá con el botón **Exportar**. El **PNG** es EXACTAMENTE lo que ves, pixel por pixel. El **SVG/PDF/EPS** se traza **una sola vez al exportar** a partir de ese resultado (con tus colores protegidos) — mientras editás no hay ningún re-trazado moviéndote los bordes del arte.
+9. Exportá con el botón **Exportar**:
+   - **Guardar SVG / PDF / EPS**: vector real, se traza **una sola vez al exportar** (con tus colores protegidos) — mientras editás no hay re-trazado moviendo bordes.
+   - **SVG por grupos** (aparece si tenés grupos): un SVG donde **cada grupo es una capa nombrada** (`Gorro`, `Letras`…) con sus colores como subcapas. **Illustrator y Affinity lo abren con TUS capas**, listo para separar tintas.
+   - **Guardar / Copiar PNG**: exactamente lo que ves, pixel por pixel.
 
-**Formatos de salida:** **SVG**, **PDF**, **EPS** o **PNG**. También podés **bajar las capas por color** (una por cada color de la paleta).
-
-**Nota sobre IA Premium (Recraft):** las curvas premium no se re-trazan, así que la edición de **objetos y zonas** está disponible solo con motor **Local** (la app lo indica). Con Premium podés editar **capas** (recolorear/ocultar) sin gastar créditos extra.
+**Nota sobre IA Premium (Recraft):** las curvas premium no se re-trazan, así que la edición de **objetos, zonas y grupos** está disponible solo con motor **Local** (la app lo indica). Con Premium podés editar **capas** (recolorear/ocultar) sin gastar créditos extra.
 
 **Tips:**
 - Menos colores = vector más limpio y liviano. Empezá bajo y subí solo si perdés detalle importante.
-- ¿Capa (todos) o clic (uno)? Para recolorear **todo un color** usá la capa; para **un elemento o un grupo** (letras, gorro, barba) seleccionalo con clic / shift+clic.
+- ¿Capa (todos) o clic (uno)? Para recolorear **todo un color** usá la capa; para **un elemento o un grupo** (letras, gorro, barba) seleccionalo con clic / marco.
+- ¿Teñir o Aplanar? **Teñir** para objetos con sombreado (mantiene el modelado); **Aplanar** para tintas planas de logo.
+- Para entregar a un cliente que edita en Illustrator/Affinity: armá tus grupos y usá **Exportar → SVG por grupos**.
 - Si el logo está sobre un fondo sólido, el vector queda mucho más prolijo que partiendo de una foto con fondo complejo (combinalo con **Quitar fondo** primero).
-- ¿Necesitás separar por tintas o capas? Bajá las **capas por color**.
 
 ---
 

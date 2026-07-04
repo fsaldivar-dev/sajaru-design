@@ -25,6 +25,7 @@ import {
   buildOverlayFromMask,
   colorMask,
   containedFiguresMask,
+  dilateMask,
   effectiveMask,
   floodComponent,
   hitComponent,
@@ -140,8 +141,19 @@ export default function Vectorizar(): React.JSX.Element {
   const hiddenWashRef = useRef<HTMLCanvasElement | null>(null)
   const hoverCacheRef = useRef<Map<string, Component[]>>(new Map())
   const layerNoteTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  // El picker nativo dispara onChange en CADA tick del arrastre: coalescemos a UNA edición.
-  const groupColorDebounce = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  // El picker nativo dispara onChange en CADA tick del arrastre: coalescemos a UNA edición
+  // POR SWATCH (un Map, no un timer global — un timer compartido hacía que tocar un 2º
+  // swatch cancelara el commit del 1º y se perdiera la edición en silencio).
+  const groupColorTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  const scheduleGroupColor = (key: string, fn: () => void): void => {
+    const t = groupColorTimers.current.get(key)
+    if (t) clearTimeout(t)
+    groupColorTimers.current.set(key, setTimeout(fn, 450))
+  }
+  const clearGroupColorTimers = (): void => {
+    for (const t of groupColorTimers.current.values()) clearTimeout(t)
+    groupColorTimers.current.clear()
+  }
   const hasImage = Boolean(source)
   const busy = progress !== null
   // La edición raster (objetos/zonas) consolida re-trazando LOCAL: con IA Premium el SVG
@@ -199,11 +211,16 @@ export default function Vectorizar(): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [result?.url])
 
-  // Cambiar a IA Premium apaga las herramientas raster (ver `canEditRaster`).
+  // Cambiar a IA Premium apaga las herramientas raster (ver `canEditRaster`) y deja el
+  // estado de grupos limpio (nada de menús/expansiones colgadas).
   useEffect(() => {
     if (!canEditRaster) {
       setSelComps([])
       setSelSubs([])
+      setExpandedGroup(null)
+      setGroupColors([])
+      setGroupHover(null)
+      setAddToOpen(false)
     }
   }, [canEditRaster])
 
@@ -416,6 +433,9 @@ export default function Vectorizar(): React.JSX.Element {
     setSelComps([])
     setSelSubs([])
     setGroups([])
+    setExpandedGroup(null)
+    setLockedColors([])
+    clearGroupColorTimers() // nada de un teñido a medio-arrastrar aplicándose a la imagen nueva
     resetHistory(false)
     const fresh = { ...config, edit: undefined }
     setConfig(fresh)
@@ -432,8 +452,14 @@ export default function Vectorizar(): React.JSX.Element {
     debounceRef.current = setTimeout(() => void run(cfg), 400)
   }
 
-  // Limpia el debounce pendiente al desmontar.
-  useEffect(() => () => clearTimeout(debounceRef.current), [])
+  // Limpia los debounces pendientes al desmontar.
+  useEffect(
+    () => () => {
+      clearTimeout(debounceRef.current)
+      clearGroupColorTimers()
+    },
+    []
+  )
 
   // Atajos globales: ⌘Z deshacer · ⌘⇧Z rehacer (historial ÚNICO: paleta + ediciones) ·
   // Escape deselecciona / cierra menús / sale de Editar zona · Supr borra la selección.
@@ -454,6 +480,7 @@ export default function Vectorizar(): React.JSX.Element {
         return
       }
       if (e.key === 'Escape') {
+        clearGroupColorTimers() // cortar cualquier teñido a medio-arrastrar
         // De a una capa por pulsación (estándar): menús → selección.
         if (addToOpen) setAddToOpen(false)
         else if (exportOpen) setExportOpen(false)
@@ -710,7 +737,13 @@ export default function Vectorizar(): React.JSX.Element {
     if (!result || !raster || !groups.length || busy) return
     const token = ++tokenRef.current
     setError(null)
-    setProgress({ value: 0, message: `Exportando ${groups.length + 1} capas (esto traza cada grupo)…` })
+    // El export incluye TODOS los grupos (el ojo/apartado es un estado de trabajo, no de
+    // contenido): que un grupo desaparezca del archivo por tener el ojo cerrado sería peor.
+    const nHidden = groups.filter((g) => g.hidden).length
+    setProgress({
+      value: 0,
+      message: `Exportando capas (traza cada grupo)…${nHidden ? ` incluye ${nHidden} apartada${nHidden > 1 ? 's' : ''}` : ''}`
+    })
     try {
       const N = raster.w * raster.h
       const assigned = new Uint8Array(N)
@@ -739,10 +772,14 @@ export default function Vectorizar(): React.JSX.Element {
           restoArea++
         }
       }
+      // Dilatar 1px CADA partición: las capas adyacentes se solapan en la frontera y el
+      // apilado (bottom→top) tapa la costura de 1px que Potrace dejaba al trazar por separado.
+      const D = (m: Uint8Array): Promise<ArrayBuffer> =>
+        maskToPngBytes(raster.w, raster.h, dilateMask(m, raster.w, raster.h, 1))
       // bottom → top: Resto primero, después los grupos en orden inverso del panel
-      if (restoArea) parts.push({ name: 'Resto', maskPng: await maskToPngBytes(raster.w, raster.h, resto) })
+      if (restoArea) parts.push({ name: 'Resto', maskPng: await D(resto) })
       for (let i = groupParts.length - 1; i >= 0; i--) {
-        parts.push({ name: groupParts[i].name, maskPng: await maskToPngBytes(raster.w, raster.h, groupParts[i].mask) })
+        parts.push({ name: groupParts[i].name, maskPng: await D(groupParts[i].mask) })
       }
       if (!parts.length) {
         setError({ code: 'E_GROUPS', message: 'Los grupos no tienen píxeles en el diseño actual' })
@@ -897,7 +934,10 @@ export default function Vectorizar(): React.JSX.Element {
 
   /** "Emparejar": la zona de la marquesina se funde a su color dominante (tapa suciedad).
    *  Disponible cuando la selección es UNA marquesina sin restas. */
-  const canEmparejar = selComps.length === 1 && selComps[0].kind === 'marquee' && selSubs.length === 0
+  // Emparejar necesita el RECT del marco: una selección recuperada de un grupo (⌖) es
+  // 'marquee' pero sin rect, así que el botón NO debe aparecer (era un botón muerto).
+  const canEmparejar =
+    selComps.length === 1 && selComps[0].kind === 'marquee' && Boolean(selComps[0].rect) && selSubs.length === 0
 
   async function onEmparejar(): Promise<void> {
     const rect = selComps[0]?.rect
@@ -1054,7 +1094,8 @@ export default function Vectorizar(): React.JSX.Element {
    *  (así el recolor no puede expandirse al componente fusionado con un vecino). */
   async function recolorGroup(g0: VectorGroup, hex: string): Promise<void> {
     const raster = rasterRef.current
-    if (!raster || busy) return
+    // Guarda contra un timer que sobrevivió a un cambio: el grupo debe seguir existiendo.
+    if (!raster || busy || !groups.some((x) => x.id === g0.id)) return
     let g = g0
     if (!g.maskPng) {
       const m = await resolveGroupMask(g, raster)
@@ -1132,7 +1173,9 @@ export default function Vectorizar(): React.JSX.Element {
       if (!m[p] || raster.data[p * 4 + 3] < 128) continue
       const d =
         (raster.data[p * 4] - c.r) ** 2 + (raster.data[p * 4 + 1] - c.g) ** 2 + (raster.data[p * 4 + 2] - c.b) ** 2
-      if (d < 144) {
+      // Tolerancia apretada (6²): la mini-paleta lista colores EXACTOS, así que teñir uno no
+      // debe arrastrar un tono vecino del sombreado (con 24 colores algunos quedan cerca).
+      if (d < 36) {
         mask2[p] = 1
         area++
       }
@@ -1242,13 +1285,17 @@ export default function Vectorizar(): React.JSX.Element {
   )
 
   // La línea de ayuda contextual (UN solo lugar: la barra de estado del lienzo).
+  // ¿Están TODOS los grupos apartados y no queda nada seleccionable? (raster de selección vacío)
+  const allApart = groups.length > 0 && groups.every((g) => g.hidden)
   const canvasHint = !result
     ? 'Vectoriza solo al cargar la imagen'
     : !canEditRaster
       ? 'Motor Premium: editá las capas en el panel · la edición de objetos/zonas es del motor Local'
       : selComps.length
         ? '⌥ + arrastrá RESTA una zona · shift suma · Supr borra · Escape deselecciona'
-        : 'clic = objeto · arrastrá = figuras del marco · scroll/espacio = mover · pinch o ⌘ scroll = zoom'
+        : allApart
+          ? 'Todo apartado — traé un grupo de vuelta con el ojo para poder seleccionar'
+          : 'clic = objeto · arrastrá = figuras del marco · scroll/espacio = mover · pinch o ⌘ scroll = zoom'
 
   return (
     <div className="flex h-full flex-col">
@@ -1736,10 +1783,7 @@ export default function Vectorizar(): React.JSX.Element {
               </div>
               <p className="mb-2 text-[11px] leading-snug text-muted-foreground">
                 La capa cambia <span className="font-semibold">todos</span> los objetos de ese
-                color — para uno solo, hacé <span className="font-semibold">clic sobre él</span> en el lienzo.
-                Tocá el <span className="font-semibold">HEX</span> para seleccionar esos píxeles ·
-                candado = protegida (el marco no la agarra) · ojo = ocultar · ojo enmarcado = ver
-                sola · flecha = exportar la capa (SVG).
+                color — para uno solo, <span className="font-semibold">clic sobre él</span> en el lienzo.
               </p>
               <div className="space-y-1.5">
                 {palette.map((c, i) => {
@@ -1840,7 +1884,7 @@ export default function Vectorizar(): React.JSX.Element {
                   <div key={g.id}>
                   <div
                     className={cn(
-                      'flex items-center gap-1 rounded-md px-1 py-0.5 transition',
+                      'group flex items-center gap-1 rounded-md px-1 py-0.5 transition',
                       groupHover === g.id && 'bg-sky-400/10',
                       g.hidden && 'opacity-50'
                     )}
@@ -1875,8 +1919,7 @@ export default function Vectorizar(): React.JSX.Element {
                         disabled={busy}
                         onChange={(ev) => {
                           const v = ev.target.value
-                          clearTimeout(groupColorDebounce.current)
-                          groupColorDebounce.current = setTimeout(() => void recolorGroup(g, v), 500)
+                          scheduleGroupColor(g.id, () => void recolorGroup(g, v))
                         }}
                         className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
                       />
@@ -1891,15 +1934,8 @@ export default function Vectorizar(): React.JSX.Element {
                       }}
                       className="w-0 min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 py-1 text-xs font-medium outline-none transition focus:border-border"
                     />
-                    <button
-                      type="button"
-                      disabled={busy || g.hidden}
-                      title="Recuperar el grupo como selección viva (shift = sumar) — para afinarlo: restar con ⌥, sumar piezas, re-guardar o «Añadir a»"
-                      onClick={(ev) => void selectGroupContents(g, ev.shiftKey)}
-                      className="flex h-7 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground disabled:opacity-40"
-                    >
-                      <MousePointer2 className="h-3.5 w-3.5" />
-                    </button>
+                    {/* Candado = convención universal, siempre visible. Si está bloqueado se
+                        queda visible aunque no haya hover (para poder desbloquear). */}
                     <button
                       type="button"
                       disabled={busy}
@@ -1911,16 +1947,29 @@ export default function Vectorizar(): React.JSX.Element {
                       onClick={() => toggleGroupLocked(g.id)}
                       className={cn(
                         'flex h-7 w-6 shrink-0 items-center justify-center rounded-md transition hover:text-foreground disabled:opacity-40',
-                        g.locked ? 'text-foreground' : 'text-muted-foreground/60'
+                        g.locked
+                          ? 'text-foreground'
+                          : 'text-muted-foreground/60 opacity-0 group-hover:opacity-100 focus-visible:opacity-100'
                       )}
                     >
                       {g.locked ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
+                    </button>
+                    {/* ⌖ recuperar y papelera: acciones secundarias, se revelan al pasar el
+                        mouse por la fila — la fila respira y el nombre gana ancho (F3). */}
+                    <button
+                      type="button"
+                      disabled={busy || g.hidden}
+                      title="Recuperar el grupo como selección viva (shift = sumar) — para afinarlo: restar con ⌥, sumar piezas, re-guardar o «Añadir a»"
+                      onClick={(ev) => void selectGroupContents(g, ev.shiftKey)}
+                      className="flex h-7 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-40"
+                    >
+                      <MousePointer2 className="h-3.5 w-3.5" />
                     </button>
                     <button
                       type="button"
                       title="Eliminar el grupo (no toca el diseño)"
                       onClick={() => deleteGroup(g.id)}
-                      className="flex h-7 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground"
+                      className="flex h-7 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -1929,9 +1978,11 @@ export default function Vectorizar(): React.JSX.Element {
                       SOLO ese color dentro del grupo (esténcil ∩ color) — "el gris de la
                       banda del gorro" sin tocar los grises del resto del diseño. */}
                   {expandedGroup === g.id && (
-                    <div className="mb-1 ml-6 space-y-1 border-l border-border pl-2 pt-1">
-                      {groupColors.length === 0 && (
-                        <p className="text-[10px] text-muted-foreground">Leyendo los colores del grupo…</p>
+                    <div className={cn('mb-1 ml-6 space-y-1 border-l border-border pl-2 pt-1', busy && 'opacity-50')}>
+                      {(groupColors.length === 0 || busy) && (
+                        <p className="text-[10px] text-muted-foreground">
+                          {busy ? 'Actualizando los colores…' : 'Leyendo los colores del grupo…'}
+                        </p>
                       )}
                       {groupColors.map((c) => (
                         <div key={c.hex} className="flex items-center gap-1.5">
@@ -1946,11 +1997,7 @@ export default function Vectorizar(): React.JSX.Element {
                               disabled={busy}
                               onChange={(ev) => {
                                 const v = ev.target.value
-                                clearTimeout(groupColorDebounce.current)
-                                groupColorDebounce.current = setTimeout(
-                                  () => void recolorGroupColor(g, c.hex, v),
-                                  500
-                                )
+                                scheduleGroupColor(`${g.id}:${c.hex}`, () => void recolorGroupColor(g, c.hex, v))
                               }}
                               className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
                             />
@@ -1966,10 +2013,8 @@ export default function Vectorizar(): React.JSX.Element {
                 ))}
               </div>
               <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
-                Flechita = ver LOS COLORES del grupo (tocá uno y cambia solo dentro del
-                grupo) · swatch = teñir todo el grupo (conserva sombras) · ⌖ = recuperarlo
-                como selección · candado = protegido · ojo = apartarlo · «Añadir a» suma la
-                selección activa a un grupo.
+                Swatch = teñir todo el grupo · <span className="font-semibold">▸</span> = ver
+                sus colores. Pasá el mouse por la fila para más acciones.
               </p>
             </div>
           )}

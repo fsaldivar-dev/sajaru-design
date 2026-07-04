@@ -171,7 +171,7 @@ La **barra de estado** (abajo del lienzo) siempre muestra el zoom y qué hace la
 2. **Arrastrá un marco** → selecciona las **FIGURAS contenidas, con TODOS sus colores**: una letra entra entera (cuerpo, sombras, brillos), aunque sean mil fragmentos. El fondo y lo que fluye fuera del marco no entran. En la barra tenés el conmutador **Figuras / Un color** ("Un color" = solo el dominante del marco, para cortar zonas).
 3. **⌥ (alt) + arrastrá** → **RESTA** esa zona de la selección. El caso clásico: el gorro y la playera comparten color y se tocan por los contornos — clic en la playera (se seleccionan los dos), **⌥ sobre el gorro**, y quedó solo la playera.
 4. **Shift** suma (clic o marco). **Escape** o clic en el vacío deselecciona.
-5. En la **barra de acciones**: elegí el color y tocá **Recolorear**, **Borrar** (tecla **Supr**), o — si la selección es un marco — **Emparejar** (funde la zona a su color dominante: tapa manchitas y líneas de borde).
+5. En la **barra de acciones**: elegí el color y tocá **Teñir** (mueve el tono conservando sombras y brillos — para arte con modelado) o **Aplanar** (un color plano exacto — para tintas planas de logo); **Borrar** (tecla **Supr**); o — si la selección es un marco — **Emparejar** (funde la zona a su color dominante: tapa manchitas y líneas de borde).
 
 ### Grupos: "esto son las letras, esto es el gorro"
 
@@ -179,8 +179,9 @@ Para no re-seleccionar lo mismo cada vez:
 
 1. Armá la selección como quieras (clics, marcos, restas con ⌥) y tocá **Guardar como grupo**.
 2. En el panel **Grupos** (a la derecha): escribí el nombre real ("Letras", "Gorro", "Barba", "Playera").
-3. **Tocá el swatch del grupo** y se recolorea **todo el grupo de una**. Pasá el mouse por la fila y se resalta en el lienzo.
-4. Los grupos sobreviven aunque cambies colores o re-traces. Eliminarlo no toca el diseño (es solo la selección guardada).
+3. **Tocá el swatch del grupo** y se **tiñe todo el grupo de una** (conserva el sombreado). O tocá la **▸ (flechita)** para ver **los colores del grupo** y cambiar **solo uno** (el gris de la banda del gorro sin tocar los otros grises).
+4. Cada fila tiene **ojo** (apartar: no se ve ni se selecciona, para afinar el resto) y **candado** (protegido: ni clic ni marco lo agarran). Al pasar el mouse aparece **⌖** (recuperar el grupo como selección para afinarlo) y la papelera.
+5. Los grupos sobreviven aunque cambies colores o re-traces. Eliminarlo no toca el diseño (es solo la selección guardada).
 
 ### Limpiar bordes y manchitas
 
@@ -199,11 +200,13 @@ Si quedaron manchitas o líneas raras en los bordes (típico cuando el fondo ori
 Arriba a la derecha está el botón **Exportar** — un solo menú con todo:
 
 - **Guardar SVG** — vector real, escalable a cualquier tamaño (el formato estrella).
+- **SVG por grupos** — (aparece si armaste grupos) un SVG donde **cada grupo es una capa nombrada** (Gorro, Letras…) con sus colores como subcapas. **Illustrator y Affinity lo abren con TUS capas**, listo para separar tintas o seguir editando.
 - **PDF** — vectorial, ideal para imprenta / plotter.
 - **EPS** — vectorial, también para imprenta / plotter.
 - **Guardar PNG** / **Copiar PNG** — si necesitás una versión en píxeles.
 
-> **Tip.** Para que el logo quede impecable, subí el zoom del preview y revisá los bordes de las curvas antes de exportar. Si con **Local** las curvas te quedan "dentadas" en un logo con formas muy suaves, probá **IA Premium**: suele devolver curvas mucho más limpias. Y no te pases de **Colores**: un logo de 3 tintas no necesita 12.
+> **Tip.** Para que el logo quede impecable, subí el zoom del preview (hasta **64×**) y revisá los bordes de las curvas antes de exportar. Si con **Local** las curvas te quedan "dentadas" en un logo con formas muy suaves, probá **IA Premium**: suele devolver curvas mucho más limpias. Y no te pases de **Colores**: un logo de 3 tintas no necesita 12.
+> **Para entregar a un diseñador** que va a seguir en Illustrator/Affinity: armá tus grupos (Gorro, Letras, Fondo…) y exportá con **SVG por grupos** — abre con tu estructura de capas intacta.
 
 ---
 
