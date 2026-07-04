@@ -51,7 +51,9 @@ export function CompareView({
   beforeLabel?: string
   afterLabel?: string
   background: string
-  /** Modo "zona": el arrastre dibuja un rectángulo en vez de panear. */
+  /** Modo "zona" heredado: fuerza arrastre = rectángulo. Con `onSelectRect` presente, el
+   *  arrastre en modo normal YA es marquesina (gramática única) — el pan vive en scroll,
+   *  espacio y botón del medio, como en Figma/Illustrator. */
   selecting?: boolean
   /** Procesando: se puede navegar pero NO editar (no dispara rect ni pick, sin perder el modo). */
   busy?: boolean
@@ -59,9 +61,13 @@ export function CompareView({
   hint?: string
   /** Canvas de resaltado a resolución nativa de `after`; se compone sobre el resultado. */
   overlay?: HTMLCanvasElement | null
-  /** Rectángulo elegido, en píxeles de la imagen `after` (ya intersectado con la imagen). */
-  onSelectRect?: (rect: { x: number; y: number; w: number; h: number }) => void
-  /** Clic sin arrastre sobre un píxel OPACO — en modo normal Y en modo zona. */
+  /** Marquesina, en píxeles de la imagen `after` (ya intersectada con la imagen).
+   *  `additive` = shift (sumar) · `subtract` = ⌥/alt (restar de la selección). */
+  onSelectRect?: (
+    rect: { x: number; y: number; w: number; h: number },
+    opts: { additive: boolean; subtract: boolean }
+  ) => void
+  /** Clic sin arrastre sobre un píxel OPACO — en cualquier modo. */
   onPickPoint?: (pick: CanvasPick) => void
 }) {
   const [scale, setScale] = useState(1)
@@ -312,7 +318,7 @@ export function CompareView({
     const h = Math.min(img.naturalHeight, Math.max(a.y, b.y)) - y
     if (w <= 0 || h <= 0) return
     // Cualquier franja vale (una marquesina de 200×2 px es un caso REAL: líneas de borde).
-    onSelectRect({ x, y, w: Math.max(1, w), h: Math.max(1, h) })
+    onSelectRect({ x, y, w: Math.max(1, w), h: Math.max(1, h) }, { additive: e.shiftKey, subtract: e.altKey })
   }
 
   /** Dispara el pick (clic sin arrastre). Fuera de la imagen (checkerboard) también dispara,
@@ -332,11 +338,11 @@ export function CompareView({
     ? isPanning
       ? 'cursor-grabbing'
       : 'cursor-grab'
-    : selecting
+    : selecting || sel
       ? busy
         ? 'cursor-progress'
         : 'cursor-crosshair select-none'
-      : scale > 1
+      : scale > 1 && !onSelectRect
         ? 'cursor-grab'
         : ''
 
@@ -369,20 +375,23 @@ export function CompareView({
           })
           return
         }
-        if (selecting && sel) {
+        if (sel) {
           const r = viewRef.current?.getBoundingClientRect()
           if (!r) return
           setSel((s) => (s ? { ...s, x1: e.clientX - r.left, y1: e.clientY - r.top } : s))
         }
       }}
       onPointerDown={(e) => {
-        // Espacio o botón del medio = mano, en CUALQUIER modo (también dentro de Editar zona).
+        // Espacio o botón del medio = mano, en CUALQUIER modo.
         if (spaceDown || e.button === 1) {
           startPan(e)
           return
         }
         if (e.button !== 0) return
-        if (selecting) {
+        // Con onSelectRect, el arrastre es MARQUESINA (gramática única de selección) — el
+        // pan vive en scroll/espacio/botón del medio. Sin ella (p.ej. Mejorar), el arrastre
+        // sigue paneando con zoom.
+        if (selecting || onSelectRect) {
           if (busy) return
           const r = viewRef.current?.getBoundingClientRect()
           if (!r) return
@@ -409,7 +418,7 @@ export function CompareView({
           downPt.current = null
           return
         }
-        if (selecting && sel) {
+        if (sel) {
           finishSelection(e)
           return
         }
@@ -425,8 +434,8 @@ export function CompareView({
     >
       <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
 
-      {/* Rectángulo de selección (modo "Editar zona") */}
-      {selecting && sel && (
+      {/* Rectángulo de la marquesina */}
+      {sel && (
         <div
           className="pointer-events-none absolute z-30 border-2 border-sky-400 bg-sky-400/20"
           style={{

@@ -389,6 +389,9 @@ export interface SajaruApi {
       mode: 'erase' | 'recolor',
       to?: string
     ) => Promise<BgProcessResult>
+    /** Selección LIBRE: edita EXACTAMENTE los píxeles del PNG-máscara (alfa>=128) —
+     *  marquesina por color o componente con zonas restadas. Un paso del historial. */
+    maskEdit: (mask: ArrayBuffer, mode: 'erase' | 'recolor', to?: string) => Promise<BgProcessResult>
     /** Deshace LA ÚLTIMA acción de zona/objeto (`count` entradas = un paso, p.ej. un grupo). */
     undoLastFill: (count?: number) => Promise<BgProcessResult & { remaining?: number }>
     /** Rehace la última edición deshecha. */

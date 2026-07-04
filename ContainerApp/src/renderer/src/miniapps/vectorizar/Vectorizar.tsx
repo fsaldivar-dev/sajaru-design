@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChevronDown,
   Download,
-  Eraser,
   Eye,
   EyeOff,
   Redo2,
@@ -12,13 +11,24 @@ import {
   Upload,
   X
 } from 'lucide-react'
-import type { PaletteEdit, RgbColor, VectorAreaMode, VectorGroup, VectorizeConfig } from '@shared/types'
+import type { PaletteEdit, RgbColor, VectorGroup, VectorizeConfig } from '@shared/types'
 import { cn } from '@renderer/lib/cn'
 import { CompareView, type CanvasPick } from '@renderer/components/CompareView'
 import { useRevokeOnUnmount } from '@renderer/lib/useRevokeOnUnmount'
 import { useShell } from '@renderer/lib/shell'
 import { OP_COST, recordUsage } from '@renderer/lib/premium'
-import { buildOverlay, floodComponent, hitComponent, loadRaster, type Component, type Raster } from './flood'
+import {
+  buildOverlayFromMask,
+  effectiveMask,
+  floodComponent,
+  hitComponent,
+  loadRaster,
+  marqueeMask,
+  maskToPngBytes,
+  rectMask,
+  type Component,
+  type Raster
+} from './flood'
 
 import { CHECKER, IMAGE_ACCEPT as ACCEPT } from '@renderer/lib/image'
 
@@ -40,6 +50,14 @@ interface SourceImage {
 /** Paso del historial ÚNICO: una edición de paleta/capas, o una acción raster de `n`
  *  entradas (un rect = 1; recolorear un grupo de 8 objetos = 8, se deshace como UN paso). */
 type UAction = { kind: 'palette' } | { kind: 'fill'; n: number }
+
+/** Pieza de la SELECCIÓN: un componente conectado (clic) o una marquesina por color
+ *  (arrastre — el color dominante DENTRO del marco, aunque no esté conectado). */
+type SelComp = Component & {
+  kind: 'comp' | 'marquee'
+  /** Rect original de la marquesina (px de imagen) — lo usa "Emparejar". */
+  rect?: { x: number; y: number; w: number; h: number }
+}
 
 /**
  * Mini app "Vectorizar": traza un logo/imagen a vector (Potrace + separación de capas de
@@ -69,14 +87,14 @@ export default function Vectorizar(): React.JSX.Element {
   const [copied, setCopied] = useState(false)
   const [over, setOver] = useState(false)
   const [exportOpen, setExportOpen] = useState(false)
-  // Herramienta de ZONA (rect): modo + contador de ediciones raster vigentes.
-  const [selecting, setSelecting] = useState(false)
+  // Contador de ediciones raster vigentes (para "Quitar ediciones (N)").
   const [zones, setZones] = useState(0)
-  const [areaMode, setAreaMode] = useState<VectorAreaMode>('fill')
-  const [areaColor, setAreaColor] = useState('#8b5a2b')
-  // SELECCIÓN de objetos (componentes conectados) — se calcula client-side (flood.ts) y se
-  // RESALTA en el lienzo. Las acciones de la barra contextual operan sobre ella.
-  const [selComps, setSelComps] = useState<Component[]>([])
+  // SELECCIÓN — se calcula client-side (flood.ts) y se RESALTA en el lienzo. Se compone:
+  // clic = componente conectado · arrastre = marquesina por color (el dominante DENTRO del
+  // marco) · shift suma · ⌥+arrastre RESTA una zona (así separás la playera del gorro
+  // aunque compartan color y se toquen). Las acciones de la barra operan sobre lo efectivo.
+  const [selComps, setSelComps] = useState<SelComp[]>([])
+  const [selSubs, setSelSubs] = useState<Uint8Array[]>([])
   const [actionColor, setActionColor] = useState('#c53916')
   // Grupos con nombre ("Letras", "Gorro"…). Persisten en el main (sobreviven cambiar de
   // mini app y re-trazados; se limpian al cargar otra imagen).
@@ -112,10 +130,15 @@ export default function Vectorizar(): React.JSX.Element {
   // roba la selección ni el lugar, como en Illustrator. Semillas borradas mueren solas.
   useEffect(() => {
     const prev = rasterRef.current
-    const seeds = prev ? selComps.map((c) => ({ px: c.seed.x / prev.w, py: c.seed.y / prev.h })) : []
+    // Se reviven SOLO los componentes de clic (sus semillas re-floodean el objeto nuevo,
+    // recolorado o no). Las marquesinas y las restas son máscaras del raster viejo: mueren.
+    const seeds = prev
+      ? selComps.filter((c) => c.kind === 'comp').map((c) => ({ px: c.seed.x / prev.w, py: c.seed.y / prev.h }))
+      : []
     rasterRef.current = null
     hoverCacheRef.current.clear()
     setHoverComps([])
+    setSelSubs([])
     if (!result?.url) {
       setSelComps([])
       return
@@ -129,8 +152,9 @@ export default function Vectorizar(): React.JSX.Element {
           const revived = seeds
             .map((s) => floodComponent(r, s.px * r.w, s.py * r.h))
             .filter((c): c is Component => c !== null)
+            .map((c) => ({ ...c, kind: 'comp' as const }))
           setSelComps(revived)
-        } else if (!prev) {
+        } else {
           setSelComps([])
         }
       },
@@ -145,8 +169,8 @@ export default function Vectorizar(): React.JSX.Element {
   // Cambiar a IA Premium apaga las herramientas raster (ver `canEditRaster`).
   useEffect(() => {
     if (!canEditRaster) {
-      setSelecting(false)
       setSelComps([])
+      setSelSubs([])
     }
   }, [canEditRaster])
 
@@ -182,13 +206,14 @@ export default function Vectorizar(): React.JSX.Element {
     setHoverComps(comps)
   }, [groupHover, groups])
 
-  // Overlay de resaltado: selección + grupo hovereado, compuesto por CompareView.
+  // Overlay de resaltado: (selección − restas) + grupo hovereado, compuesto por CompareView.
   const overlay = useMemo(() => {
     const raster = rasterRef.current
-    const comps = [...selComps, ...hoverComps]
-    if (!raster || !comps.length) return null
-    return buildOverlay(raster.w, raster.h, comps)
-  }, [selComps, hoverComps])
+    if (!raster) return null
+    const eff = effectiveMask(raster.w, raster.h, [...selComps, ...hoverComps], selSubs)
+    if (!eff) return null
+    return buildOverlayFromMask(raster.w, raster.h, eff.mask)
+  }, [selComps, selSubs, hoverComps])
 
   // Handoff: si otra mini app nos mandó una imagen ("Enviar a → Vectorizar"), la
   // pre-cargamos al montar. consumeTransfer() es consume-once: no recarga en re-renders.
@@ -242,8 +267,8 @@ export default function Vectorizar(): React.JSX.Element {
     setResult(null)
     setPalette([])
     setZones(0)
-    setSelecting(false)
     setSelComps([])
+    setSelSubs([])
     setGroups([])
     resetHistory(false)
     const fresh = { ...config, edit: undefined }
@@ -283,10 +308,12 @@ export default function Vectorizar(): React.JSX.Element {
         return
       }
       if (e.key === 'Escape') {
-        // De a una capa por pulsación (estándar): menú → selección → modo zona.
+        // De a una capa por pulsación (estándar): menú → selección.
         if (exportOpen) setExportOpen(false)
-        else if (selComps.length) setSelComps([])
-        else if (selecting) setSelecting(false)
+        else if (selComps.length || selSubs.length) {
+          setSelComps([])
+          setSelSubs([])
+        }
         return
       }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selComps.length && !busy) {
@@ -297,7 +324,7 @@ export default function Vectorizar(): React.JSX.Element {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hist, uhist, source, selComps, selecting, busy, actionColor, exportOpen])
+  }, [hist, uhist, source, selComps, selSubs, busy, actionColor, exportOpen])
 
   function handleFiles(files: FileList | null): void {
     const f = files?.[0]
@@ -547,25 +574,62 @@ export default function Vectorizar(): React.JSX.Element {
     openApp('playeras-mockup-3d', { bytes, name: `${baseName()}-vector.png` })
   }
 
-  /** Herramienta de ZONA: aplica el modo activo (emparejar/borrar/recolorear) al rectángulo
-   *  elegido (raster). La edición queda guardada en el main y se re-aplica si re-vectorizás
-   *  (tocar capas/controles no la borra). */
-  async function onSelectRect(rect: { x: number; y: number; w: number; h: number }): Promise<void> {
-    clearTimeout(debounceRef.current) // sin re-trazado en paralelo con la edición
+  /** MARQUESINA (arrastre): suma la selección del color dominante dentro del marco;
+   *  con ⌥ (alt) RESTA todo lo que caiga en el marco — separa la playera del gorro
+   *  aunque compartan color y se toquen. Con shift suma sin reemplazar. */
+  function onMarquee(
+    rect: { x: number; y: number; w: number; h: number },
+    opts: { additive: boolean; subtract: boolean }
+  ): void {
+    if (busy || !result || !canEditRaster) return
+    const raster = rasterRef.current
+    if (!raster) return
+    if (opts.subtract) {
+      const m = rectMask(raster, rect)
+      if (m && selComps.length) setSelSubs((s) => [...s, m])
+      return
+    }
+    const comp = marqueeMask(raster, rect)
+    if (!comp) return
+    const tagged: SelComp = { ...comp, kind: 'marquee', rect }
+    if (opts.additive) {
+      setSelComps((s) => [...s, tagged])
+      return
+    }
+    setSelComps([tagged])
+    setSelSubs([])
+    setActionColor(comp.hex)
+  }
+
+  /** ¿La selección son SOLO componentes de clic, sin restas? (→ va por semillas y puede
+   *  guardarse como grupo; si no, viaja como máscara exacta). */
+  const pureComps = selSubs.length === 0 && selComps.every((c) => c.kind === 'comp')
+
+  /** Aplica borrar/recolorear a TODA la selección en un solo paso del historial. Semillas
+   *  cuando es pura (robusto a re-trazados); MÁSCARA exacta cuando hay marquesina o resta.
+   *  La selección de clics NO se limpia: al llegar el resultado se re-floodean las mismas
+   *  semillas ("probar dos colores en la misma letra" = recolorear dos veces). */
+  async function applySelection(mode: 'erase' | 'recolor'): Promise<void> {
+    if (!selComps.length || busy) return
+    const to = mode === 'recolor' ? actionColor : undefined
+    if (pureComps) {
+      await runObjectEditPoints(selComps.map((c) => c.seed), mode, to)
+      return
+    }
+    const raster = rasterRef.current
+    if (!raster) return
+    const eff = effectiveMask(raster.w, raster.h, selComps, selSubs)
+    if (!eff) return
+    clearTimeout(debounceRef.current)
+    const bytes = await maskToPngBytes(raster.w, raster.h, eff.mask)
     const token = ++tokenRef.current
     setError(null)
-    const msg =
-      areaMode === 'fill' ? 'Emparejando la zona…' : areaMode === 'erase' ? 'Borrando la zona…' : 'Recoloreando la zona…'
-    setProgress({ value: 0, message: msg })
-    const r = await window.api.vectorize.areaFill(
-      rect,
-      areaMode,
-      areaMode === 'recolor' ? areaColor : undefined
-    )
+    setProgress({ value: 0, message: mode === 'erase' ? 'Borrando la selección…' : 'Recoloreando la selección…' })
+    const r = await window.api.vectorize.maskEdit(bytes, mode, to)
     if (token !== tokenRef.current) return
     setProgress(null)
     if (!r.ok) {
-      setError(r.error ?? { code: 'E_AREA', message: 'No se pudo editar la zona' })
+      setError(r.error ?? { code: 'E_AREA', message: 'No se pudo editar la selección' })
       return
     }
     if (r.bytes) {
@@ -575,15 +639,29 @@ export default function Vectorizar(): React.JSX.Element {
     }
   }
 
-  /** Aplica borrar/recolorear a TODA la selección (N componentes conectados) en un solo
-   *  paso: N puntos al sidecar, UNA consolidación, UN paso del historial. La selección NO
-   *  se limpia: al llegar el resultado se re-floodean las mismas semillas (así "probar dos
-   *  colores en la misma letra" es recolorear dos veces, sin re-clickear). */
-  async function applySelection(mode: 'erase' | 'recolor'): Promise<void> {
-    if (!selComps.length || busy) return
-    const points = selComps.map((c) => c.seed)
-    const to = mode === 'recolor' ? actionColor : undefined
-    await runObjectEditPoints(points, mode, to)
+  /** "Emparejar": la zona de la marquesina se funde a su color dominante (tapa suciedad).
+   *  Disponible cuando la selección es UNA marquesina sin restas. */
+  const canEmparejar = selComps.length === 1 && selComps[0].kind === 'marquee' && selSubs.length === 0
+
+  async function onEmparejar(): Promise<void> {
+    const rect = selComps[0]?.rect
+    if (!rect || busy) return
+    clearTimeout(debounceRef.current)
+    const token = ++tokenRef.current
+    setError(null)
+    setProgress({ value: 0, message: 'Emparejando la zona…' })
+    const r = await window.api.vectorize.areaFill(rect, 'fill')
+    if (token !== tokenRef.current) return
+    setProgress(null)
+    if (!r.ok) {
+      setError(r.error ?? { code: 'E_AREA', message: 'No se pudo emparejar la zona' })
+      return
+    }
+    if (r.bytes) {
+      applyFillResult({ bytes: r.bytes })
+      setZones((z) => z + 1)
+      setUhist((h) => ({ undo: [...h.undo, { kind: 'fill', n: 1 }], redo: [] }))
+    }
   }
 
   /** Núcleo del modo OBJETO: N componentes conectados → sidecar → consolidar → historial. */
@@ -612,15 +690,18 @@ export default function Vectorizar(): React.JSX.Element {
     return true
   }
 
-  /** CLIC sobre el lienzo: SELECCIONA el objeto (y lo resalta). Shift+clic suma o quita;
-   *  clic en vacío deselecciona. Vale igual dentro de "Editar zona" — el clic nunca edita
-   *  nada por sí solo (las acciones viven en la barra contextual). */
+  /** CLIC sobre el lienzo: SELECCIONA el objeto (componente conectado) y lo resalta.
+   *  Shift+clic suma o quita; clic en vacío deselecciona. El clic nunca edita nada por sí
+   *  solo (las acciones viven en la barra contextual). */
   function onPickPoint(p: CanvasPick): void {
     if (busy || !result || !canEditRaster) return
     const raster = rasterRef.current
     if (!raster) return
     if (!p.hex) {
-      if (!p.additive) setSelComps([])
+      if (!p.additive) {
+        setSelComps([])
+        setSelSubs([])
+      }
       return
     }
     const idx = hitComponent(selComps, raster.w, p.x, p.y)
@@ -630,24 +711,28 @@ export default function Vectorizar(): React.JSX.Element {
         return
       }
       const comp = floodComponent(raster, p.x, p.y)
-      if (comp) setSelComps((s) => [...s, comp])
+      if (comp) setSelComps((s) => [...s, { ...comp, kind: 'comp' }])
       return
     }
     if (idx >= 0) return // ya estaba seleccionado: se mantiene
     const comp = floodComponent(raster, p.x, p.y)
     if (!comp) {
       setSelComps([])
+      setSelSubs([])
       return
     }
-    setSelComps([comp])
+    setSelComps([{ ...comp, kind: 'comp' }])
+    setSelSubs([])
     // El recolor arranca del color real del objeto (después lo cambiás en el selector).
     setActionColor(comp.hex)
   }
 
-  /** Guarda la selección actual como GRUPO con nombre (semillas normalizadas → main). */
+  /** Guarda la selección actual como GRUPO con nombre (semillas normalizadas → main).
+   *  Solo para selecciones de componentes puros: una marquesina o una resta no son
+   *  reconstruibles por semillas tras un re-trazado. */
   function saveGroup(): void {
     const raster = rasterRef.current
-    if (!raster || !selComps.length) return
+    if (!raster || !selComps.length || !pureComps) return
     const g: VectorGroup = {
       id: `g${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`,
       name: `Grupo ${groups.length + 1}`,
@@ -722,15 +807,9 @@ export default function Vectorizar(): React.JSX.Element {
     ? 'Vectoriza solo al cargar la imagen'
     : !canEditRaster
       ? 'Motor Premium: editá las capas en el panel · la edición de objetos/zonas es del motor Local'
-      : selecting
-        ? areaMode === 'fill'
-          ? 'Arrastrá sobre la zona sucia: se empareja a su color dominante · espacio = mover'
-          : areaMode === 'erase'
-            ? 'Arrastrá la zona: borra su color dominante · clic = seleccionar objeto · espacio = mover'
-            : 'Arrastrá la zona: recolorea su color dominante · clic = seleccionar objeto · espacio = mover'
-        : selComps.length
-          ? 'shift+clic suma o quita · Supr borra la selección · Escape deselecciona'
-          : 'clic = seleccionar un objeto · scroll = mover · pinch o ⌘ scroll = zoom · espacio = mano'
+      : selComps.length
+        ? '⌥ + arrastrá RESTA una zona · shift suma · Supr borra · Escape deselecciona'
+        : 'clic = objeto · arrastrá = zona por color · scroll/espacio = mover · pinch o ⌘ scroll = zoom'
 
   return (
     <div className="flex h-full flex-col">
@@ -853,62 +932,7 @@ export default function Vectorizar(): React.JSX.Element {
                   Vector
                 </h3>
                 <div className="flex min-w-0 shrink items-center gap-3">
-                  {selecting && canEditRaster && (
-                    <div className="flex items-center gap-1">
-                      {(
-                        [
-                          { m: 'fill' as const, label: 'Emparejar', tip: 'La zona se empareja a su color dominante (tapa suciedad)' },
-                          { m: 'erase' as const, label: 'Borrar', tip: 'Borra el color dominante de la zona (→ transparente)' },
-                          { m: 'recolor' as const, label: 'Recolorear', tip: 'Cambia el color dominante de la zona' }
-                        ]
-                      ).map(({ m, label, tip }) => (
-                        <button
-                          key={m}
-                          type="button"
-                          disabled={busy}
-                          onClick={() => setAreaMode(m)}
-                          title={tip}
-                          className={cn(
-                            'rounded-md border px-2 py-0.5 text-[11px] font-medium transition disabled:opacity-40',
-                            areaMode === m
-                              ? 'border-foreground bg-foreground text-background'
-                              : 'border-border text-muted-foreground hover:text-foreground'
-                          )}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                      {areaMode === 'recolor' && (
-                        <label
-                          className="relative ml-1 h-5 w-7 shrink-0 cursor-pointer overflow-hidden rounded border border-border"
-                          title="Color destino del recoloreado"
-                        >
-                          <span className="absolute inset-0" style={{ backgroundColor: areaColor }} />
-                          <input
-                            type="color"
-                            value={areaColor}
-                            onChange={(e) => setAreaColor(e.target.value)}
-                            className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                          />
-                        </label>
-                      )}
-                    </div>
-                  )}
-                  {canEditRaster ? (
-                    <button
-                      type="button"
-                      disabled={!result || busy}
-                      onClick={() => setSelecting((s) => !s)}
-                      title="Herramienta de zona: arrastrá un rectángulo para emparejar, borrar o recolorear su color dominante"
-                      className={cn(
-                        'flex items-center gap-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40',
-                        selecting ? 'text-sky-500' : 'text-muted-foreground hover:text-foreground'
-                      )}
-                    >
-                      <Eraser className="h-3.5 w-3.5" />
-                      {selecting ? 'Listo' : 'Editar zona'}
-                    </button>
-                  ) : (
+                  {!canEditRaster && (
                     <span className="text-[11px] text-muted-foreground">
                       {zones > 0 ? `${zones} ediciones en pausa · ` : ''}Objetos y zonas: motor Local
                     </span>
@@ -947,7 +971,14 @@ export default function Vectorizar(): React.JSX.Element {
                     ))}
                   </span>
                   <span className="text-xs font-medium">
-                    {selComps.length === 1 ? '1 objeto' : `${selComps.length} objetos`}
+                    {selComps.length === 1
+                      ? selComps[0].kind === 'marquee'
+                        ? 'zona (color dominante)'
+                        : '1 objeto'
+                      : `${selComps.length} piezas`}
+                    {selSubs.length > 0 && (
+                      <span className="ml-1 text-muted-foreground">− {selSubs.length} resta{selSubs.length > 1 ? 's' : ''}</span>
+                    )}
                     {selHasBg && <span className="ml-1 font-semibold text-amber-600 dark:text-amber-400">· incluye el FONDO</span>}
                   </span>
                   <span className="mx-0.5 text-xs text-muted-foreground">→</span>
@@ -978,21 +1009,39 @@ export default function Vectorizar(): React.JSX.Element {
                   >
                     Borrar
                   </button>
+                  {canEmparejar && (
+                    <button
+                      type="button"
+                      onClick={() => void onEmparejar()}
+                      title="Toda la zona del marco se funde a su color dominante (tapa suciedad y líneas de borde)"
+                      className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition hover:text-foreground"
+                    >
+                      Emparejar
+                    </button>
+                  )}
                   <button
                     type="button"
+                    disabled={!pureComps}
                     onClick={saveGroup}
-                    title="Guardá esta selección con nombre (Letras, Gorro…) para recolorearla toda junta cuando quieras"
-                    className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition hover:text-foreground"
+                    title={
+                      pureComps
+                        ? 'Guardá esta selección con nombre (Letras, Gorro…) para recolorearla toda junta cuando quieras'
+                        : 'Los grupos se guardan desde selecciones de clics (las marquesinas y restas no sobreviven re-trazados)'
+                    }
+                    className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     Guardar como grupo
                   </button>
                   <span className="ml-auto hidden text-[11px] text-muted-foreground lg:inline">
-                    shift+clic suma · Escape deselecciona
+                    ⌥ + arrastrá = restar · shift suma · Escape deselecciona
                   </span>
                   <button
                     type="button"
                     title="Deseleccionar (Escape)"
-                    onClick={() => setSelComps([])}
+                    onClick={() => {
+                      setSelComps([])
+                      setSelSubs([])
+                    }}
                     className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground"
                   >
                     <X className="h-3.5 w-3.5" />
@@ -1007,11 +1056,10 @@ export default function Vectorizar(): React.JSX.Element {
                   beforeLabel="Original"
                   afterLabel="Vector"
                   background={CHECKER}
-                  selecting={selecting && canEditRaster}
                   busy={busy}
                   hint={canvasHint}
                   overlay={overlay}
-                  onSelectRect={canEditRaster ? (rect) => void onSelectRect(rect) : undefined}
+                  onSelectRect={canEditRaster ? onMarquee : undefined}
                   onPickPoint={canEditRaster ? onPickPoint : undefined}
                 />
               </div>

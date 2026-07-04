@@ -107,6 +107,130 @@ export function hitComponent(comps: Component[], w: number, x: number, y: number
   return -1
 }
 
+/** Tolerancia perceptual de la MARQUESINA (igual que el rect del sidecar: agrupa el AA). */
+const MARQ_TOL2 = 48 * 48
+
+/**
+ * MARQUESINA por color (varita + marco): selecciona los píxeles del color DOMINANTE dentro
+ * del rect — aunque no estén conectados (los 140 fragmentos de una letra texturizada) y
+ * aunque el mismo color siga fuera del rect (el marco corta: la playera sin el gorro).
+ */
+export function marqueeMask(raster: Raster, rect: { x: number; y: number; w: number; h: number }): Component | null {
+  const { data, w, h } = raster
+  const x0 = Math.max(0, Math.round(rect.x))
+  const y0 = Math.max(0, Math.round(rect.y))
+  const x1 = Math.min(w, Math.round(rect.x + rect.w))
+  const y1 = Math.min(h, Math.round(rect.y + rect.h))
+  if (x1 - x0 < 1 || y1 - y0 < 1) return null
+  // color dominante entre los píxeles OPACOS del rect (cuantizado 5 bits, como el sidecar)
+  const counts = new Map<number, { n: number; r: number; g: number; b: number }>()
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const i = (y * w + x) * 4
+      if (data[i + 3] < 128) continue
+      const key = ((data[i] >> 3) << 10) | ((data[i + 1] >> 3) << 5) | (data[i + 2] >> 3)
+      const e = counts.get(key)
+      if (e) e.n++
+      else counts.set(key, { n: 1, r: data[i], g: data[i + 1], b: data[i + 2] })
+    }
+  }
+  let dom = { n: 0, r: 0, g: 0, b: 0 }
+  for (const e of counts.values()) if (e.n > dom.n) dom = e
+  if (dom.n === 0) return null
+  const mask = new Uint8Array(w * h)
+  let area = 0
+  let seed: { x: number; y: number } | null = null
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const p = y * w + x
+      const i = p * 4
+      if (data[i + 3] < 128) continue
+      const d = (data[i] - dom.r) ** 2 + (data[i + 1] - dom.g) ** 2 + (data[i + 2] - dom.b) ** 2
+      if (d >= MARQ_TOL2) continue
+      mask[p] = 1
+      area++
+      if (!seed) seed = { x, y }
+    }
+  }
+  if (!area || !seed) return null
+  const hex = '#' + [dom.r, dom.g, dom.b].map((v) => v.toString(16).padStart(2, '0')).join('')
+  return { seed, hex, mask, bbox: { x0, y0, x1: x1 - 1, y1: y1 - 1 }, area }
+}
+
+/** Máscara de TODOS los píxeles opacos del rect (para RESTAR una zona de la selección). */
+export function rectMask(raster: Raster, rect: { x: number; y: number; w: number; h: number }): Uint8Array | null {
+  const { data, w, h } = raster
+  const x0 = Math.max(0, Math.round(rect.x))
+  const y0 = Math.max(0, Math.round(rect.y))
+  const x1 = Math.min(w, Math.round(rect.x + rect.w))
+  const y1 = Math.min(h, Math.round(rect.y + rect.h))
+  if (x1 - x0 < 1 || y1 - y0 < 1) return null
+  const mask = new Uint8Array(w * h)
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const p = y * w + x
+      if (data[p * 4 + 3] >= 128) mask[p] = 1
+    }
+  }
+  return mask
+}
+
+/** Máscara EFECTIVA de la selección: unión de los agregados menos las restas. */
+export function effectiveMask(
+  w: number,
+  h: number,
+  adds: Component[],
+  subs: Uint8Array[]
+): { mask: Uint8Array; area: number } | null {
+  if (!adds.length) return null
+  const mask = new Uint8Array(w * h)
+  for (const c of adds) for (let p = 0; p < mask.length; p++) if (c.mask[p]) mask[p] = 1
+  for (const s of subs) for (let p = 0; p < mask.length; p++) if (s[p]) mask[p] = 0
+  let area = 0
+  for (let p = 0; p < mask.length; p++) if (mask[p]) area++
+  return area ? { mask, area } : null
+}
+
+/** Overlay de resaltado desde una máscara efectiva (tinte + borde de 1px). */
+export function buildOverlayFromMask(w: number, h: number, mask: Uint8Array): HTMLCanvasElement | null {
+  const c = document.createElement('canvas')
+  c.width = w
+  c.height = h
+  const g = c.getContext('2d')
+  if (!g) return null
+  const out = g.createImageData(w, h)
+  const o = out.data
+  for (let p = 0; p < w * h; p++) {
+    if (!mask[p]) continue
+    const x = p % w
+    const y = (p / w) | 0
+    const edge =
+      x === 0 || y === 0 || x === w - 1 || y === h - 1 || !mask[p - 1] || !mask[p + 1] || !mask[p - w] || !mask[p + w]
+    const i = p * 4
+    o[i] = 56
+    o[i + 1] = 152
+    o[i + 2] = 255
+    o[i + 3] = edge ? 255 : 88
+  }
+  g.putImageData(out, 0, 0)
+  return c
+}
+
+/** La máscara como PNG (alfa 255 en lo seleccionado) para mandar al sidecar (--mask). */
+export async function maskToPngBytes(w: number, h: number, mask: Uint8Array): Promise<ArrayBuffer> {
+  const c = document.createElement('canvas')
+  c.width = w
+  c.height = h
+  const g = c.getContext('2d')
+  if (!g) throw new Error('Canvas 2D no disponible')
+  const out = g.createImageData(w, h)
+  for (let p = 0; p < w * h; p++) if (mask[p]) out.data[p * 4 + 3] = 255
+  g.putImageData(out, 0, 0)
+  const blob = await new Promise<Blob | null>((res) => c.toBlob(res, 'image/png'))
+  if (!blob) throw new Error('No se pudo serializar la máscara')
+  return blob.arrayBuffer()
+}
+
 /**
  * Canvas de RESALTADO (resolución nativa): tinte celeste sobre los componentes + borde de
  * 1px sólido — el sustituto honesto de las "hormigas marchantes". CompareView lo compone

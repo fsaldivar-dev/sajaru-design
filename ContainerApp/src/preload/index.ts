@@ -33,6 +33,7 @@ const api: SajaruApi = {
     process: (config) => ipcRenderer.invoke('vec:process', config),
     areaFill: (rect, mode, to) => ipcRenderer.invoke('vec:areaFill', rect, mode, to),
     objectEdit: (points, mode, to) => ipcRenderer.invoke('vec:objectEdit', points, mode, to),
+    maskEdit: (mask, mode, to) => ipcRenderer.invoke('vec:maskEdit', mask, mode, to),
     undoLastFill: (count) => ipcRenderer.invoke('vec:undoLastFill', count),
     redoLastFill: () => ipcRenderer.invoke('vec:redoLastFill'),
     groupsGet: () => ipcRenderer.invoke('vec:groupsGet'),

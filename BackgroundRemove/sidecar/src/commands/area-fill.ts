@@ -21,7 +21,7 @@ export async function areaFillCommand(
   opts: {
     input: string
     output: string
-    /** Zona rectangular (modo zona). Alternativa: `point` (modo OBJETO). */
+    /** Zona rectangular (modo zona). Alternativa: `point` (modo OBJETO) o `mask`. */
     rect?: { x: number; y: number; w: number; h: number }
     /**
      * Modo OBJETO (estilo Illustrator): el punto clickeado selecciona el COMPONENTE
@@ -29,6 +29,13 @@ export async function areaFillCommand(
      * título" no toca la barba aunque ambos sean blancos.
      */
     point?: { x: number; y: number }
+    /**
+     * Modo MÁSCARA (selección libre del renderer: marquesina por color, componente menos
+     * una zona restada, etc.): PNG cuyo canal alfa>=128 (o luminancia>=128 si es opaco)
+     * marca los píxeles a editar, TAL CUAL — WYSIWYG exacto con lo resaltado. Se re-escala
+     * (nearest) si el tamaño no coincide con el input.
+     */
+    mask?: string
     mode?: AreaMode
     /** Color destino para `recolor` (r,g,b 0-255). */
     to?: { r: number; g: number; b: number }
@@ -42,6 +49,31 @@ export async function areaFillCommand(
   const W = meta.width ?? 0
   const H = meta.height ?? 0
   const { data } = await src.ensureAlpha().raw().toBuffer({ resolveWithObject: true })
+
+  // ---- MODO MÁSCARA: aplica el modo EXACTAMENTE donde la selección marca ----
+  if (opts.mask) {
+    ctx.progress('vectorize', 0.5, mode === 'erase' ? 'Borrando la selección' : 'Recoloreando la selección')
+    const m = await sharp(opts.mask)
+      .resize(W, H, { kernel: 'nearest', fit: 'fill' })
+      .ensureAlpha()
+      .raw()
+      .toBuffer({ resolveWithObject: true })
+    const md = m.data
+    for (let p = 0; p < W * H; p++) {
+      if (md[p * 4 + 3] < 128 || data[p * 4 + 3] < 128) continue
+      if (mode === 'erase') data[p * 4 + 3] = 0
+      else if (opts.to) {
+        data[p * 4] = opts.to.r
+        data[p * 4 + 1] = opts.to.g
+        data[p * 4 + 2] = opts.to.b
+      }
+    }
+    const outBuf = await sharp(data, { raw: { width: W, height: H, channels: 4 } }).png().toBuffer()
+    await fs.mkdir(path.dirname(opts.output), { recursive: true })
+    await fs.writeFile(opts.output, outBuf)
+    ctx.progress('vectorize', 1)
+    return { output: opts.output, color: opts.to ? '#' + [opts.to.r, opts.to.g, opts.to.b].map((v) => v.toString(16).padStart(2, '0')).join('') : null }
+  }
 
   // ---- MODO OBJETO: click → componente conectado del color clickeado ----
   if (opts.point) {

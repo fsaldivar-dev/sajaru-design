@@ -40,6 +40,9 @@ let areaFills: Array<{
   /** Punto normalizado del modo OBJETO (excluyente con el rect). */
   px?: number
   py?: number
+  /** Máscara de SELECCIÓN LIBRE (marquesina por color, componente menos resta): PNG con
+   *  alfa>=128 en lo editado. El sidecar la re-escala al raster vigente (nearest). */
+  maskPath?: string
   mode: VectorAreaMode
   /** Color destino (#rrggbb) cuando mode === 'recolor'. */
   to?: string
@@ -90,8 +93,9 @@ async function applyAreaFills(png: string, sender: WebContents): Promise<string>
     const { width, height } = nativeImage.createFromPath(cur).getSize()
     if (!width || !height) break
     const out = path.join(tmpRoot(TMP), `vector-${++counter}.png`)
-    const region =
-      f.px !== undefined && f.py !== undefined
+    const region = f.maskPath
+      ? ['--mask', f.maskPath]
+      : f.px !== undefined && f.py !== undefined
         ? ['--point', `${Math.round(f.px * width)},${Math.round(f.py * height)}`]
         : [
             '--rect',
@@ -355,6 +359,48 @@ async function objectEdit(
   }
 }
 
+/** Selección LIBRE (máscara del renderer): edita EXACTAMENTE los píxeles seleccionados —
+ *  la marquesina por color o un componente con zonas restadas. Un paso del historial. */
+async function maskEdit(
+  maskBytes: ArrayBuffer,
+  mode: 'erase' | 'recolor',
+  to: string | undefined,
+  sender: WebContents
+): Promise<BgProcessResult> {
+  if (!lastResult) return { ok: false, error: { code: 'E_NO_RESULT', message: 'No hay resultado' } }
+  redoFills = []
+  const maskPath = path.join(tmpRoot(TMP), `mask-${++counter}.png`)
+  await fs.mkdir(tmpRoot(TMP), { recursive: true })
+  await fs.writeFile(maskPath, Buffer.from(maskBytes))
+  areaFills.push({ maskPath, mode, to })
+  const input = editedRaster ?? lastResult.png
+  const out = path.join(tmpRoot(TMP), `vector-${++counter}.png`)
+  const r = await runSidecar(
+    [
+      'area-fill', '-i', input, '-o', out, '--mask', maskPath,
+      '--mode', mode,
+      ...(to ? ['--to', to] : []),
+      '--events'
+    ],
+    sender,
+    PROGRESS_CHANNEL
+  )
+  if (!r.ok) return { ok: false, error: r.error }
+  try {
+    const pngPath = String((r.data as { output?: string } | undefined)?.output ?? out)
+    editedRaster = pngPath
+    const c = await consolidateToVector(pngPath, sender)
+    const finalPng = c?.png ?? pngPath
+    const finalSvg = c?.svg ?? lastResult.svg
+    const buf = await fs.readFile(finalPng)
+    lastResult = { png: finalPng, svg: finalSvg }
+    const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+    return { ok: true, bytes: ab, outputName: path.basename(finalPng), format: 'png' }
+  } catch (e) {
+    return { ok: false, error: { code: 'E_READ', message: (e as Error).message } }
+  }
+}
+
 /** Deshace LA ÚLTIMA acción de zona/objeto (`count` = cuántas entradas formaron esa acción:
  *  un grupo de 8 letras se deshace como UN paso). Re-aplica las restantes desde el raster
  *  base y re-consolida. Devuelve el PNG resultante y cuántas ediciones quedan. */
@@ -560,6 +606,9 @@ export function registerVectorizeIpc(ipcMain: IpcMain): void {
     'vec:objectEdit',
     (e, points: Array<{ x: number; y: number }>, mode: 'erase' | 'recolor', to?: string) =>
       enqueue(async () => rasterGuard() ?? objectEdit(points, mode, to, e.sender))
+  )
+  ipcMain.handle('vec:maskEdit', (e, mask: ArrayBuffer, mode: 'erase' | 'recolor', to?: string) =>
+    enqueue(async () => rasterGuard() ?? maskEdit(mask, mode, to, e.sender))
   )
   ipcMain.handle('vec:undoLastFill', (e, count?: number) =>
     enqueue(async () => rasterGuard() ?? undoLastFill(count ?? 1, e.sender))

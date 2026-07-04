@@ -163,14 +163,15 @@ Igual que en Figma o Illustrator:
 
 La **barra de estado** (abajo del lienzo) siempre muestra el zoom y qué hace la herramienta activa. Para revisar bordes antes de exportar: pinch para acercarte y scroll para recorrer el contorno.
 
-### Seleccionar y editar objetos (clic)
+### Seleccionar y editar (clic, marco y resta)
 
-¿Querés cambiar el color de **una** letra, **un** escudo o **el** gorro — sin tocar el resto de ese color? No uses la capa: **seleccionalo en el preview**.
+¿Querés cambiar el color de **una** letra, **un** escudo o **la** playera — sin tocar el resto de ese color? No uses la capa: **seleccionalo en el preview**. Lo seleccionado siempre **se resalta en celeste** ANTES de tocar nada.
 
-1. **Clic sobre el objeto** → se **resalta en celeste** (eso es lo que está seleccionado, ni más ni menos).
-2. **Shift+clic** suma más objetos a la selección (o quita uno ya seleccionado). **Escape** o clic en el vacío deselecciona.
-3. En la **barra de acciones** que aparece arriba del lienzo: elegí el color y tocá **Recolorear**, o tocá **Borrar** (también con la tecla **Supr**).
-4. Solo cambian los objetos **seleccionados** (las piezas conectadas que clickeaste), aunque haya veinte más del mismo color. Estilo Illustrator.
+1. **Clic sobre un objeto** → selecciona esa pieza conectada.
+2. **Arrastrá un marco** → selecciona el **color dominante DENTRO del marco**, aunque sean mil fragmentos sueltos (una letra texturizada entra entera) y aunque ese color siga fuera del marco (el marco corta).
+3. **⌥ (alt) + arrastrá** → **RESTA** esa zona de la selección. El caso clásico: el gorro y la playera comparten color y se tocan por los contornos — clic en la playera (se seleccionan los dos), **⌥ sobre el gorro**, y quedó solo la playera.
+4. **Shift** suma (clic o marco). **Escape** o clic en el vacío deselecciona.
+5. En la **barra de acciones**: elegí el color y tocá **Recolorear**, **Borrar** (tecla **Supr**), o — si la selección es un marco — **Emparejar** (funde la zona a su color dominante: tapa manchitas y líneas de borde).
 
 ### Grupos: "esto son las letras, esto es el gorro"
 
@@ -181,13 +182,9 @@ Para no re-seleccionar lo mismo cada vez:
 3. **Tocá el swatch del grupo** y se recolorea **todo el grupo de una**. Pasá el mouse por la fila y se resalta en el lienzo.
 4. Los grupos sobreviven aunque cambies colores o re-traces. Eliminarlo no toca el diseño (es solo la selección guardada).
 
-### Limpiar zonas y bordes (rectángulo)
+### Limpiar bordes y manchitas
 
-Si quedaron manchitas o líneas raras en los bordes (típico cuando el fondo original tenía un color parecido):
-
-1. Activá **Editar zona** y elegí el modo: **Emparejar** (tapa la zona con su color predominante), **Borrar** (quita el color predominante, útil para restos de fondo) o **Recolorear**.
-2. **Arrastrá un rectángulo** sobre la zona — vale cualquier franja, aunque sea finita (2 px de alto). Con **espacio** te movés sin salir del modo.
-3. Repetí en cada zona sucia. Cuando termines, tocá **Listo**.
+Si quedaron manchitas o líneas raras en los bordes (típico cuando el fondo original tenía un color parecido): **arrastrá un marco** sobre la zona sucia — vale cualquier franja, aunque sea finita (2 px de alto) — y en la barra tocá **Borrar** (quita el color dominante de la zona) o **Emparejar** (la funde al color dominante). Con **espacio** te movés sin perder nada.
 
 ### Deshacer (de verdad)
 
