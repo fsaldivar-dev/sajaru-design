@@ -30,9 +30,10 @@ export function CompareView({
   selecting?: boolean
   /** Rectángulo elegido, en píxeles de la imagen `after` (no del canvas). */
   onSelectRect?: (rect: { x: number; y: number; w: number; h: number }) => void
-  /** CLICK (sin arrastre) en modo selección: punto en píxeles de la imagen `after`.
-   *  Lo usa el modo OBJETO (seleccionar el componente conectado del color clickeado). */
-  onPickPoint?: (point: { x: number; y: number }) => void
+  /** CLICK (sin arrastre) sobre un píxel OPACO del resultado — en modo selección Y en modo
+   *  normal. `x/y` en píxeles de la imagen `after` (para el modo OBJETO del sidecar),
+   *  `vx/vy` en px del viewport (para posicionar un popover) y `hex` el color clickeado. */
+  onPickPoint?: (point: { x: number; y: number; vx: number; vy: number; hex: string | null }) => void
 }) {
   const [scale, setScale] = useState(1)
   const [off, setOff] = useState({ x: 0, y: 0 })
@@ -45,6 +46,40 @@ export function CompareView({
   const beforeImg = useRef<HTMLImageElement | null>(null)
   const afterImg = useRef<HTMLImageElement | null>(null)
   const panning = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null)
+  // Dónde empezó el pointerdown en modo normal: si el pointerup queda a <4px es un CLICK
+  // (selección de objeto), no un pan.
+  const downPt = useRef<{ x: number; y: number } | null>(null)
+
+  /** Invierte el transform de dibujo (translate/scale/object-contain): px CSS del viewport →
+   *  píxeles de la imagen `after`. Devuelve null fuera de la imagen o sin resultado. */
+  const viewToImg = (cx: number, cy: number): { x: number; y: number } | null => {
+    const img = afterImg.current
+    if (!img || !img.naturalWidth) return null
+    const W = size.w
+    const H = size.h
+    const s = Math.min(W / img.naturalWidth, H / img.naturalHeight)
+    const dw = img.naturalWidth * s
+    const dh = img.naturalHeight * s
+    const x = ((cx - W / 2 - off.x) / scale + dw / 2) / s
+    const y = ((cy - H / 2 - off.y) / scale + dh / 2) / s
+    if (x < 0 || y < 0 || x >= img.naturalWidth || y >= img.naturalHeight) return null
+    return { x, y }
+  }
+
+  /** Color del píxel clickeado en el resultado (o null si es transparente). */
+  const sampleHex = (px: number, py: number): string | null => {
+    const img = afterImg.current
+    if (!img) return null
+    const c = document.createElement('canvas')
+    c.width = 1
+    c.height = 1
+    const g = c.getContext('2d', { willReadFrequently: true })
+    if (!g) return null
+    g.drawImage(img, -Math.floor(px), -Math.floor(py))
+    const d = g.getImageData(0, 0, 1, 1).data
+    if (d[3] < 128) return null
+    return '#' + [d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, '0')).join('')
+  }
 
   useEffect(() => {
     if (!before) {
@@ -151,7 +186,7 @@ export function CompareView({
       // CLICK (sin arrastre) = seleccionar OBJETO: el punto en px de la imagen.
       const px = Math.max(0, Math.min(img.naturalWidth - 1, a.x))
       const py = Math.max(0, Math.min(img.naturalHeight - 1, a.y))
-      onPickPoint({ x: px, y: py })
+      onPickPoint({ x: px, y: py, vx: cur.x0, vy: cur.y0, hex: sampleHex(px, py) })
     }
   }
 
@@ -200,18 +235,36 @@ export function CompareView({
           e.currentTarget.setPointerCapture(e.pointerId)
           return
         }
+        downPt.current = { x: e.clientX, y: e.clientY }
         if (scale === 1) return
         panning.current = { x: e.clientX, y: e.clientY, ox: off.x, oy: off.y }
         e.currentTarget.setPointerCapture(e.pointerId)
       }}
-      onPointerUp={() => {
+      onPointerUp={(e) => {
         if (selecting) {
           finishSelection()
           return
         }
         panning.current = null
+        const d = downPt.current
+        downPt.current = null
+        if (!d || !onPickPoint) return
+        // CLICK simple en modo NORMAL (sin arrastre, sobre el canvas y no sobre un botón):
+        // seleccionar el OBJETO bajo el cursor — el flujo natural estilo Illustrator.
+        if ((e.clientX - d.x) ** 2 + (e.clientY - d.y) ** 2 > 16) return // fue un pan
+        if (e.target !== canvasRef.current) return
+        const r = viewRef.current?.getBoundingClientRect()
+        if (!r) return
+        const vx = e.clientX - r.left
+        const vy = e.clientY - r.top
+        const p = viewToImg(vx, vy)
+        if (!p) return
+        const hex = sampleHex(p.x, p.y)
+        if (!hex) return // píxel transparente: nada que editar
+        onPickPoint({ x: p.x, y: p.y, vx, vy, hex })
       }}
       onPointerLeave={() => {
+        downPt.current = null
         if (selecting) return
         panning.current = null
       }}

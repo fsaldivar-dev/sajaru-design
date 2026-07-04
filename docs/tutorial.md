@@ -146,18 +146,30 @@ El recorte pasa **directo** a esa herramienta, ya cargado, sin tocar el disco. P
 
    Empezá con **Local**.
 
-4. Ajustá el control **Colores** (un deslizador de 2 a 16). Menos colores = resultado más limpio y plano; más colores = más detalle. **Para logos planos, pocos colores suelen verse mejor.** Movelo y mirá cómo cambia el preview.
+4. Ajustá el control **Colores** (un deslizador de 2 a 24). Menos colores = resultado más limpio y plano; más colores = más detalle. **Para logos planos, pocos colores suelen verse mejor.** Movelo y mirá cómo cambia el preview.
 
-5. Del lado del preview tenés el panel de **Capas** (una por color). Podés mostrar/ocultar una capa, aislarla para verla sola, o cambiarle el color haciendo clic en su cuadrito.
+5. Del lado del preview tenés el panel de **Capas** (una por color). Podés mostrar/ocultar una capa, aislarla para verla sola, o cambiarle el color haciendo clic en su cuadrito. **Ojo:** cambiar el color de una capa cambia **TODOS** los objetos de ese color en el diseño.
 
-### Limpiar la paleta y los bordes
+6. Si tu diseño trae fondo y querés el flujo clásico de vectorizado ("vectorizo todo y después borro lo que sobra"), activá **Conservar fondo**: el fondo y los blancos quedan como capas (el blanco es tinta imprimible en DTF).
+
+### Editar UN objeto (clic directo)
+
+¿Querés cambiar el color de **una** letra, **un** escudo o **el** gorro — sin tocar el resto de ese color? No uses la capa: **hacé clic sobre el objeto en el preview**.
+
+1. **Clic sobre el objeto.** Aparece un menú chiquito pegado al clic, mostrando el color que detectó.
+2. Elegí el color nuevo en el cuadrito y tocá **Recolorear** — o tocá **Borrar** para hacerlo transparente.
+3. Solo cambia **ese** objeto (la pieza conectada que clickeaste), aunque haya veinte más del mismo color. Estilo Illustrator.
+
+### Limpiar zonas y bordes (rectángulo)
 
 Si quedaron manchitas o líneas raras en los bordes (típico cuando el fondo original tenía un color parecido):
 
-1. Activá **Limpiar zona**.
-2. **Arrastrá un rectángulo** sobre el artefacto que molesta. Esa zona **se funde al color que predomina** ahí, tapando líneas y basura de borde.
+1. Activá **Editar zona** y elegí el modo: **Fundir** (tapa la zona con su color predominante), **Borrar** (quita el color predominante, útil para restos de fondo) o **Recolorear**.
+2. **Arrastrá un rectángulo** sobre la zona.
 3. Repetí en cada zona sucia. Si te pasaste, usá **Deshacer zonas**. Cuando termines, tocá **Listo**.
 4. Para volver la paleta al estado inicial, está **Restaurar**; y siempre tenés **Deshacer** / **Rehacer**.
+
+> Todas estas ediciones (objeto y zona) **quedan grabadas en el vector**: el SVG/PDF/EPS que exportás es exactamente lo que ves.
 
 ### Exportar el vector
 

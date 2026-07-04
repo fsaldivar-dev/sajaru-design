@@ -256,16 +256,19 @@ La herramienta te tira **sugerencias** según lo que detecta (por ejemplo, te pr
    - **Local** (**Potrace por capas**, gratis).
    - **Premium** (Recraft, paga).
 3. Ajustá:
-   - **Cantidad de colores** de la paleta.
+   - **Cantidad de colores** de la paleta (hasta 24).
    - **Reducción de ruido**.
-4. **Editá la paleta en vivo** (cambiá o combiná colores).
-5. **Limpiar zona**: seleccioná un área y **fundila al color predominante** para sacar suciedad o restos.
-6. Exportá.
+   - **Conservar fondo**: vectoriza TODO (fondo incluido) para el flujo "vectorizo todo y después elimino lo que sobra". Los blancos quedan como capa imprimible (tinta blanca DTF).
+4. **Editá la paleta en vivo** (panel **Capas**): cambiar el color de una capa cambia **todos** los objetos de ese color; también podés ocultar capas o bajarlas por separado.
+5. **Editar UN objeto** (estilo Illustrator): hacé **clic directo sobre el objeto** en el lienzo (una letra, el gorro, un escudo). Aparece un menú con el color detectado y dos acciones — **Recolorear** (con el color que elijas) o **Borrar** (→ transparente). Solo afecta a **ese** objeto, aunque haya otros del mismo color.
+6. **Editar zona** (rectángulo): arrastrá un área y elegí **Fundir** (todo al color predominante, para tapar suciedad), **Borrar** (quita el color predominante de la zona) o **Recolorear** (cambia el predominante de la zona).
+7. Exportá. Las ediciones de objeto/zona **quedan en el vector** (el SVG/PDF/EPS exporta exactamente lo que ves).
 
 **Formatos de salida:** **SVG**, **PDF**, **EPS** o **PNG**. También podés **bajar las capas por color** (una por cada color de la paleta).
 
 **Tips:**
 - Menos colores = vector más limpio y liviano. Empezá bajo y subí solo si perdés detalle importante.
+- ¿Capa (todos) o clic (uno)? Para recolorear **todo un color** usá la capa; para **un solo elemento** (una letra, un parche) hacé clic sobre él.
 - Si el logo está sobre un fondo sólido, el vector queda mucho más prolijo que partiendo de una foto con fondo complejo (combinalo con **Quitar fondo** primero).
 - ¿Necesitás separar por tintas o capas? Bajá las **capas por color**.
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Download, Eraser, Eye, EyeOff, Redo2, ScanEye, Undo2, Upload } from 'lucide-react'
+import { Download, Eraser, Eye, EyeOff, Redo2, ScanEye, Undo2, Upload, X } from 'lucide-react'
 import type { PaletteEdit, RgbColor, VectorAreaMode, VectorizeConfig } from '@shared/types'
 import { cn } from '@renderer/lib/cn'
 import { CompareView } from '@renderer/components/CompareView'
@@ -50,6 +50,16 @@ export default function Vectorizar(): React.JSX.Element {
   const [zones, setZones] = useState(0)
   const [areaMode, setAreaMode] = useState<VectorAreaMode>('fill')
   const [areaColor, setAreaColor] = useState('#8b5a2b')
+  // Popover de OBJETO: clic simple sobre el vector (modo normal) → recolorear/borrar SOLO ese
+  // objeto (componente conectado), no todo el color. x/y en px de la imagen; vx/vy en px del
+  // viewport (posición del popover); hex = color clickeado.
+  const [objPick, setObjPick] = useState<{
+    x: number
+    y: number
+    vx: number
+    vy: number
+    hex: string | null
+  } | null>(null)
 
   const tokenRef = useRef(0)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -65,6 +75,15 @@ export default function Vectorizar(): React.JSX.Element {
       setProgress({ value: ev.progress, message: ev.message })
     })
   }, [])
+
+  // El popover de objeto queda obsoleto si arranca un proceso, cambia el resultado (sus
+  // coordenadas ya no corresponden) o se entra/sale del modo zona.
+  useEffect(() => {
+    if (busy) setObjPick(null)
+  }, [busy])
+  useEffect(() => {
+    setObjPick(null)
+  }, [result, selecting])
 
   // Handoff: si otra mini app nos mandó una imagen ("Enviar a → Vectorizar"), la
   // pre-cargamos al montar. consumeTransfer() es consume-once: no recarga en re-renders.
@@ -341,18 +360,18 @@ export default function Vectorizar(): React.JSX.Element {
     }
   }
 
-  /** Modo OBJETO (click sin arrastre): borra/recolorea el COMPONENTE CONECTADO del color
-   *  clickeado — sin tocar otros objetos del mismo color (estilo varita de Illustrator). */
-  async function onPickPoint(point: { x: number; y: number }): Promise<void> {
-    if (areaMode === 'fill') return // fundir necesita una zona; el click no aplica
+  /** Modo OBJETO: borra/recolorea el COMPONENTE CONECTADO del color clickeado — sin tocar
+   *  otros objetos del mismo color (estilo varita de Illustrator). */
+  async function runObjectEdit(
+    point: { x: number; y: number },
+    mode: 'erase' | 'recolor',
+    to?: string
+  ): Promise<void> {
+    setObjPick(null)
     const token = ++tokenRef.current
     setError(null)
-    setProgress({ value: 0, message: areaMode === 'erase' ? 'Borrando objeto…' : 'Recoloreando objeto…' })
-    const r = await window.api.vectorize.objectEdit(
-      point,
-      areaMode,
-      areaMode === 'recolor' ? areaColor : undefined
-    )
+    setProgress({ value: 0, message: mode === 'erase' ? 'Borrando objeto…' : 'Recoloreando objeto…' })
+    const r = await window.api.vectorize.objectEdit(point, mode, mode === 'recolor' ? to : undefined)
     if (token !== tokenRef.current) return
     setProgress(null)
     if (!r.ok) {
@@ -366,6 +385,18 @@ export default function Vectorizar(): React.JSX.Element {
       setResult({ url })
       setZones((z) => z + 1)
     }
+  }
+
+  /** CLICK sobre el resultado. En modo normal abre el popover de OBJETO (elegís recolorear o
+   *  borrar ahí mismo); dentro de "Editar zona" aplica directo el modo activo. */
+  function onPickPoint(p: { x: number; y: number; vx: number; vy: number; hex: string | null }): void {
+    if (busy || !result) return
+    if (selecting) {
+      if (areaMode === 'fill') return // fundir necesita una zona; el click no aplica
+      void runObjectEdit(p, areaMode, areaMode === 'recolor' ? areaColor : undefined)
+      return
+    }
+    setObjPick(p)
   }
 
   /** Deshace TODAS las limpiezas de zona y re-vectoriza limpio. */
@@ -485,7 +516,7 @@ export default function Vectorizar(): React.JSX.Element {
                       : areaMode === 'erase'
                         ? 'CLIC en un objeto lo borra · arrastrá una zona → borra su color predominante'
                         : 'CLIC en un objeto lo recolorea · arrastrá una zona → recolorea su predominante'
-                    : 'Vector · rueda = zoom · mantené “Ver original” para comparar'}
+                    : 'Vector · CLIC en un objeto = recolorear/borrar SOLO ese objeto · rueda = zoom'}
                 </h3>
                 <div className="flex shrink-0 items-center gap-3">
                   {selecting && (
@@ -560,7 +591,7 @@ export default function Vectorizar(): React.JSX.Element {
                   </button>
                 </div>
               </div>
-              <div className="min-h-0 flex-1">
+              <div className="relative min-h-0 flex-1">
                 <CompareView
                   before={source.url}
                   after={result?.url ?? null}
@@ -569,8 +600,62 @@ export default function Vectorizar(): React.JSX.Element {
                   background={CHECKER}
                   selecting={selecting && !busy}
                   onSelectRect={(rect) => void onSelectRect(rect)}
-                  onPickPoint={(p) => void onPickPoint(p)}
+                  onPickPoint={onPickPoint}
                 />
+                {/* Popover de OBJETO: aparece pegado al clic. Muestra el color detectado y
+                    edita SOLO ese componente conectado (no todo el color, como las capas). */}
+                {objPick && !busy && (
+                  <div
+                    className="absolute z-40 flex items-center gap-1.5 rounded-xl border border-border bg-background/95 p-1.5 shadow-xl backdrop-blur"
+                    style={{
+                      left: Math.max(150, objPick.vx),
+                      top: objPick.vy > 64 ? objPick.vy - 54 : objPick.vy + 14,
+                      transform: 'translateX(-50%)'
+                    }}
+                  >
+                    <span className="flex items-center gap-1.5 pl-1 text-[11px] font-medium text-muted-foreground">
+                      <span
+                        className="h-4 w-4 shrink-0 rounded border border-border"
+                        style={{ backgroundColor: objPick.hex ?? 'transparent' }}
+                      />
+                      Solo este objeto
+                    </span>
+                    <label
+                      className="relative ml-0.5 h-6 w-8 shrink-0 cursor-pointer overflow-hidden rounded-md border border-border"
+                      title="Color nuevo del objeto"
+                    >
+                      <span className="absolute inset-0" style={{ backgroundColor: areaColor }} />
+                      <input
+                        type="color"
+                        value={areaColor}
+                        onChange={(e) => setAreaColor(e.target.value)}
+                        className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => void runObjectEdit(objPick, 'recolor', areaColor)}
+                      className="rounded-md bg-foreground px-2 py-1 text-[11px] font-semibold text-background transition hover:opacity-90"
+                    >
+                      Recolorear
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void runObjectEdit(objPick, 'erase')}
+                      className="rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground transition hover:text-foreground"
+                    >
+                      Borrar
+                    </button>
+                    <button
+                      type="button"
+                      title="Cancelar"
+                      onClick={() => setObjPick(null)}
+                      className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )}
               </div>
               {over && (
                 <div className="pointer-events-none absolute inset-0 rounded-2xl border-2 border-dashed border-foreground/50 bg-background/40" />
@@ -745,6 +830,10 @@ export default function Vectorizar(): React.JSX.Element {
                   )}
                 </div>
               </div>
+              <p className="mb-2 text-[11px] leading-snug text-muted-foreground">
+                La capa cambia <span className="font-semibold">todos</span> los objetos de ese
+                color. Para uno solo (una letra, el gorro…), hacé <span className="font-semibold">clic sobre él</span> en el lienzo.
+              </p>
               <div className="space-y-1.5">
                 {palette.map((c, i) => {
                   const e = config.edit?.[i]
