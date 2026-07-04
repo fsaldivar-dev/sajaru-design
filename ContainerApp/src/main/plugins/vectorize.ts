@@ -18,6 +18,10 @@ const TMP = 'sajaru-vec'
 let currentInput: string | null = null
 let currentChild: ChildProcess | null = null
 let lastResult: { png: string; svg: string } | null = null
+// Raster de EDICIONES (1ª generación): las ediciones de zona/objeto encadenan SIEMPRE sobre
+// este raster (trazado + area-fills), nunca sobre un consolidado — así la consolidación es
+// siempre de una sola generación y el arte no se degrada edición tras edición.
+let editedRaster: string | null = null
 // Metadatos del último trazado (para CONSOLIDAR ediciones al vector): la paleta fija con la
 // que re-trazar fiel, el tamaño de salida y el motor (solo local; no re-trazamos curvas Recraft).
 let lastTrace: { palette: RgbColor[]; size: number; method: 'local' | 'recraft' } | null = null
@@ -48,6 +52,7 @@ async function setImage(bytes: ArrayBuffer, name: string): Promise<void> {
   const p = path.join(tmpRoot(TMP), `input${ext}`)
   await fs.writeFile(p, Buffer.from(bytes))
   currentInput = p
+  editedRaster = null
   lastResult = null
   recraftBaseSvg = null
   areaFills = []
@@ -141,6 +146,7 @@ async function process(config: VectorizeConfig, sender: WebContents): Promise<Bg
     // Re-aplicá las ediciones de zona/objeto sobre el PNG recién trazado (persisten entre
     // re-trazados) y CONSOLIDALAS al vector: el SVG exportado refleja lo que se ve.
     let pngPath = areaFills.length ? await applyAreaFills(pngPath0, sender) : pngPath0
+    editedRaster = pngPath
     if (areaFills.length) {
       const c = await consolidateToVector(pngPath, sender)
       if (c) {
@@ -194,7 +200,7 @@ async function areaFill(
   const rectArg = `${Math.round(rect.x)},${Math.round(rect.y)},${Math.round(rect.w)},${Math.round(rect.h)}`
   const r = await runSidecar(
     [
-      'area-fill', '-i', lastResult.png, '-o', out, '--rect', rectArg,
+      'area-fill', '-i', editedRaster ?? lastResult.png, '-o', out, '--rect', rectArg,
       '--mode', mode,
       ...(to ? ['--to', to] : []),
       '--events'
@@ -206,6 +212,8 @@ async function areaFill(
   try {
     const data = r.data as { output?: string } | undefined
     const pngPath = String(data?.output ?? out)
+    // La cadena de ediciones vive en el raster de 1ª generación (nunca un consolidado).
+    editedRaster = pngPath
     // CONSOLIDAR al vector: el SVG (y el PNG del preview) reflejan la edición.
     const c = await consolidateToVector(pngPath, sender)
     const finalPng = c?.png ?? pngPath
@@ -219,17 +227,10 @@ async function areaFill(
   }
 }
 
-/** '#rrggbb' → {r,g,b}; null si no parsea. */
-function hexToRgb(hex: string): RgbColor | null {
-  const h = hex.replace('#', '')
-  if (!/^[0-9a-fA-F]{6}$/.test(h)) return null
-  return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16) }
-}
-
 /**
- * CONSOLIDA las ediciones de zona/objeto AL VECTOR: re-traza el raster editado con la
- * paleta FIJA (la del trazado + los colores nuevos de los recolores) en modo entrada-plana
- * (--assume-flat: sin blur/upscale; --no-merge-thin: no matar los colores editados). El
+ * CONSOLIDA las ediciones de zona/objeto AL VECTOR: re-traza el raster editado en modo
+ * entrada-plana (--assume-flat: sin blur/upscale; --no-merge-thin: no matar los colores
+ * editados; --palette-from-input: paleta = colores exactos presentes, nada se aplasta). El
  * resultado es un SVG/PNG consistentes con lo que se ve — "Guardar SVG/PDF/EPS" exporta
  * las ediciones. Solo motor local (las curvas Premium de Recraft no se pisan).
  */
@@ -237,14 +238,10 @@ async function consolidateToVector(
   pngPath: string,
   sender: WebContents
 ): Promise<{ png: string; svg: string } | null> {
-  if (!lastTrace || lastTrace.method !== 'local' || lastTrace.palette.length === 0) return null
-  // Paleta fija = paleta del trazado + colores destino de los recolores (dedup).
-  const fixed: RgbColor[] = [...lastTrace.palette]
-  for (const f of areaFills) {
-    if (f.mode !== 'recolor' || !f.to) continue
-    const c = hexToRgb(f.to)
-    if (c && !fixed.some((p) => p.r === c.r && p.g === c.g && p.b === c.b)) fixed.push(c)
-  }
+  if (!lastTrace || lastTrace.method !== 'local') return null
+  // Los colores que el usuario PINTÓ no pueden ser podados por mergeThin (un objeto
+  // recoloreado con textura fina erosiona <35% y sin esto se fundiría al vecino).
+  const protect = [...new Set(areaFills.filter((f) => f.mode === 'recolor' && f.to).map((f) => f.to as string))]
   const out = path.join(tmpRoot(TMP), `vector-${++counter}.png`)
   const r = await runSidecar(
     [
@@ -253,8 +250,12 @@ async function consolidateToVector(
       '--denoise', '0',
       '--keep-background',
       '--assume-flat',
-      '--no-merge-thin',
-      '--edit', JSON.stringify(fixed.map((c) => ({ r: c.r, g: c.g, b: c.b }))),
+      // Paleta = colores EXACTOS del raster editado (incluye los tonos del sombreado y los
+      // colores nuevos de los recolores): nada se aplasta a otro color al consolidar.
+      // mergeThin queda ENCENDIDO: poda los cascarones de anti-alias del re-etiquetado
+      // (sin él, el consolidado se llena de flecos de 1px).
+      '--palette-from-input',
+      ...(protect.length ? ['--protect-colors', protect.join(',')] : []),
       '--events'
     ],
     sender,
@@ -283,7 +284,7 @@ async function objectEdit(
   const out = path.join(tmpRoot(TMP), `vector-${++counter}.png`)
   const r = await runSidecar(
     [
-      'area-fill', '-i', lastResult.png, '-o', out,
+      'area-fill', '-i', editedRaster ?? lastResult.png, '-o', out,
       '--point', `${Math.round(point.x)},${Math.round(point.y)}`,
       '--mode', mode,
       ...(to ? ['--to', to] : []),
@@ -296,6 +297,8 @@ async function objectEdit(
   try {
     const data = r.data as { output?: string } | undefined
     const pngPath = String(data?.output ?? out)
+    // La cadena de ediciones vive en el raster de 1ª generación (nunca un consolidado).
+    editedRaster = pngPath
     // CONSOLIDAR al vector: el SVG (y el PNG del preview) reflejan la edición.
     const c = await consolidateToVector(pngPath, sender)
     const finalPng = c?.png ?? pngPath

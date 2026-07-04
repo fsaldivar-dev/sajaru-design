@@ -55,8 +55,9 @@ export async function areaFillCommand(
     const cr = data[pi * 4]
     const cg = data[pi * 4 + 1]
     const cb = data[pi * 4 + 2]
-    // El PNG vectorizado es de colores PLANOS: tolerancia corta alcanza y no salta de capa.
-    const TOL2 = 40 * 40
+    // El PNG vectorizado es POSTERIZADO (colores planos EXACTOS): tolerancia mínima —
+    // solo variación de redondeo/AA leve. Con 40 el flood saltaba de capa (fondo→jersey).
+    const TOL2 = 12 * 12
     const same = (i: number): boolean =>
       data[i * 4 + 3] >= 128 &&
       (data[i * 4] - cr) ** 2 + (data[i * 4 + 1] - cg) ** 2 + (data[i * 4 + 2] - cb) ** 2 < TOL2

@@ -67,6 +67,18 @@ export interface VectorizeOptions {
    * de zona/objeto al vector (re-trazar el raster editado con paleta fija, fiel 1:1).
    */
   assumeFlat?: boolean
+  /**
+   * Paleta = los colores EXACTOS presentes en la entrada (posterizada): sin detección, sin
+   * fusiones, sin cap del slider. La consolidación la usa para que NINGÚN color del raster
+   * editado (incluidos los tonos que mergeThin fundió y los colores nuevos de los recolores)
+   * se aplaste a otro. Ignora `edit` y `colors`.
+   */
+  paletteFromInput?: boolean
+  /**
+   * Colores que mergeThin NO puede podar (los 'to' de los recolores del usuario): un objeto
+   * recoloreado con textura fina erosiona <35% y sin esto se fundiría al vecino.
+   */
+  protectColors?: Array<{ r: number; g: number; b: number }>
 }
 
 interface Color {
@@ -457,7 +469,28 @@ export async function vectorizeStep(
   let palette: Color[]
   let fills: Array<{ r: number; g: number; b: number }>
   const dropped = new Set<number>()
-  if (opts.edit && opts.edit.length) {
+  if (opts.paletteFromInput) {
+    // Paleta = colores EXACTOS de la entrada posterizada (los blends de anti-alias quedan
+    // fuera por el umbral de área). Sin fusiones ni caps: nada se aplasta a otro color.
+    const exact = new Map<number, { r: number; g: number; b: number; c: number }>()
+    for (let i = 0; i < N; i++) {
+      if (alpha[i] < 128) continue
+      const r = data[i * 4]
+      const g = data[i * 4 + 1]
+      const b = data[i * 4 + 2]
+      const k = (r << 16) | (g << 8) | b
+      const e = exact.get(k)
+      if (e) e.c++
+      else exact.set(k, { r, g, b, c: 1 })
+    }
+    palette = [...exact.values()]
+      .filter((e) => e.c > opaque * 0.0001)
+      .sort((a, b) => b.c - a.c)
+      .slice(0, 64)
+      .map((e) => ({ r: e.r, g: e.g, b: e.b, count: e.c }))
+    if (palette.length === 0) palette.push({ r: 0, g: 0, b: 0, count: opaque })
+    fills = palette.map((c) => ({ r: c.r, g: c.g, b: c.b }))
+  } else if (opts.edit && opts.edit.length) {
     palette = opts.edit.map((e) => ({ r: e.r, g: e.g, b: e.b, count: 0 }))
     fills = opts.edit.map((e) => e.to ?? { r: e.r, g: e.g, b: e.b })
     opts.edit.forEach((e, i) => {
@@ -597,7 +630,14 @@ export async function vectorizeStep(
         }
       }
     }
+    const protectedIdx = new Set<number>()
+    for (const pc of opts.protectColors ?? []) {
+      for (let c = 0; c < palette.length; c++) {
+        if (palette[c].r === pc.r && palette[c].g === pc.g && palette[c].b === pc.b) protectedIdx.add(c)
+      }
+    }
     for (let c = 0; c < palette.length; c++) {
+      if (protectedIdx.has(c)) continue // color editado por el usuario: intocable
       if (areaByColor[c] > 0 && areaByColor[c] < opaque * 0.05 && erodedByColor[c] / areaByColor[c] < 0.35) {
         killedColors.add(c)
       }
@@ -651,6 +691,11 @@ export async function vectorizeStep(
   const layers: string[] = []
   for (let i = 0; i < palette.length; i++) {
     if (dropped.has(i)) continue // color quitado: sin capa (sus píxeles ya son transparentes)
+    // Color "franja" fundido por mergeThin: NO emitir su capa. Antes se emitía igual y el
+    // SVG tenía capas fantasma que el panel (que lista la paleta devuelta) no podía ver ni
+    // editar; además la consolidación con paleta fija las aplastaba a colores ajenos. Sus
+    // píxeles rezagados los cubre el apilado acumulativo de las capas anteriores.
+    if (killedColors.has(i)) continue
     const layerPaths: string[] = []
     const m = Buffer.alloc(N)
     for (let j = 0; j < N; j++) {
@@ -728,6 +773,8 @@ export async function vectorizeCommand(
     mergeThin?: boolean
     keepBackground?: boolean
     assumeFlat?: boolean
+    paletteFromInput?: boolean
+    protectColors?: Array<{ r: number; g: number; b: number }>
   },
   ctx: Ctx
 ): Promise<{
@@ -779,7 +826,7 @@ export async function vectorizeCommand(
     buffer = await sharp(Buffer.from(svg), { density: 300 }).resize(size, size, { fit: 'inside' }).png().toBuffer()
     ctx.progress('vectorize', 1)
   } else {
-    const r = await vectorizeStep(buf, { colors, size, edit: opts.edit, denoise: opts.denoise, mergeThin: opts.mergeThin, keepBackground: opts.keepBackground, assumeFlat: opts.assumeFlat }, ctx)
+    const r = await vectorizeStep(buf, { colors, size, edit: opts.edit, denoise: opts.denoise, mergeThin: opts.mergeThin, keepBackground: opts.keepBackground, assumeFlat: opts.assumeFlat, paletteFromInput: opts.paletteFromInput, protectColors: opts.protectColors }, ctx)
     svg = r.svg
     buffer = r.buffer
     palette = r.palette

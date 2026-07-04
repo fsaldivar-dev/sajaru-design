@@ -330,6 +330,8 @@ program
   .option('--no-merge-thin', 'no fundir colores-franja finos al color vecino')
   .option('--keep-background', 'NO quitar el fondo uniforme del borde (vectorizar el diseño completo)')
   .option('--assume-flat', 'la entrada ya es plana (consolidación): sin blur ni upscale, resolución nativa')
+  .option('--palette-from-input', 'paleta = colores exactos de la entrada (consolidación fiel; ignora --colors/--edit)')
+  .option('--protect-colors <list>', 'colores #rrggbb separados por coma que mergeThin no puede podar')
   .addOption(new Option('--method <m>', 'local (Potrace) o recraft (IA premium)').choices(['local', 'recraft']).default('local'))
   .action((opts: Opts, cmd: Command) =>
     runCmd('vectorize', cmd, (ctx) =>
@@ -344,7 +346,14 @@ program
           denoise: Number(opts.denoise),
           mergeThin: opts.mergeThin,
           keepBackground: Boolean(opts.keepBackground),
-          assumeFlat: Boolean(opts.assumeFlat)
+          assumeFlat: Boolean(opts.assumeFlat),
+          paletteFromInput: Boolean(opts.paletteFromInput),
+          protectColors: opts.protectColors
+            ? String(opts.protectColors).split(',').map((h: string) => {
+                const s = h.trim().replace('#', '')
+                return { r: parseInt(s.slice(0, 2), 16), g: parseInt(s.slice(2, 4), 16), b: parseInt(s.slice(4, 6), 16) }
+              }).filter((c: {r:number,g:number,b:number}) => Number.isFinite(c.r) && Number.isFinite(c.g) && Number.isFinite(c.b))
+            : undefined
         },
         ctx
       )

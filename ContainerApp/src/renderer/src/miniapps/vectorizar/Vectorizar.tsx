@@ -10,7 +10,7 @@ import { OP_COST, recordUsage } from '@renderer/lib/premium'
 import { CHECKER, IMAGE_ACCEPT as ACCEPT } from '@renderer/lib/image'
 
 const DEFAULT_CONFIG: VectorizeConfig = {
-  colors: 10,
+  colors: 16,
   size: 2048,
   method: 'local',
   denoise: 30,
