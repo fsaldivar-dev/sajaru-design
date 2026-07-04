@@ -157,6 +157,79 @@ export function marqueeMask(raster: Raster, rect: { x: number; y: number; w: num
   return { seed, hex, mask, bbox: { x0, y0, x1: x1 - 1, y1: y1 - 1 }, area }
 }
 
+/**
+ * MARQUESINA de FIGURAS (la semántica de Illustrator): selecciona los COMPONENTES
+ * mayormente contenidos en el marco — con TODOS sus colores (una letra con cuerpo, sombras
+ * y brillos entra entera). Lo que fluye fuera del marco (el fondo, el linework que conecta
+ * con el resto del dibujo) queda afuera. `minInside` = fracción del componente que debe
+ * caer dentro del marco para contar como "contenido".
+ */
+export function containedFiguresMask(
+  raster: Raster,
+  rect: { x: number; y: number; w: number; h: number },
+  minInside = 0.6
+): Component | null {
+  const { data, w, h } = raster
+  const x0 = Math.max(0, Math.round(rect.x))
+  const y0 = Math.max(0, Math.round(rect.y))
+  const x1 = Math.min(w, Math.round(rect.x + rect.w))
+  const y1 = Math.min(h, Math.round(rect.y + rect.h))
+  if (x1 - x0 < 1 || y1 - y0 < 1) return null
+  const visited = new Uint8Array(w * h)
+  const out = new Uint8Array(w * h)
+  let area = 0
+  let seed: { x: number; y: number } | null = null
+  let bestHex = '#000000'
+  let bestArea = 0
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      const p0 = y * w + x
+      if (visited[p0] || out[p0] || data[p0 * 4 + 3] < 128) continue
+      // flood del componente COMPLETO (misma matemática que floodComponent)
+      const cr = data[p0 * 4]
+      const cg = data[p0 * 4 + 1]
+      const cb = data[p0 * 4 + 2]
+      const same = (i: number): boolean =>
+        data[i * 4 + 3] >= 128 &&
+        (data[i * 4] - cr) ** 2 + (data[i * 4 + 1] - cg) ** 2 + (data[i * 4 + 2] - cb) ** 2 < TOL2
+      const pixels: number[] = [p0]
+      visited[p0] = 1
+      let inside = 0
+      for (let head = 0; head < pixels.length; head++) {
+        const p = pixels[head]
+        const xx = p % w
+        const yy = (p / w) | 0
+        if (xx >= x0 && xx < x1 && yy >= y0 && yy < y1) inside++
+        for (const q of [xx > 0 ? p - 1 : -1, xx < w - 1 ? p + 1 : -1, yy > 0 ? p - w : -1, yy < h - 1 ? p + w : -1]) {
+          if (q >= 0 && !visited[q] && same(q)) {
+            visited[q] = 1
+            pixels.push(q)
+          }
+        }
+      }
+      if (inside / pixels.length < minInside) continue // fluye fuera del marco: no es "la figura"
+      for (const p of pixels) if (!out[p]) { out[p] = 1; area++ }
+      // anillo de anti-alias del componente (adyacente + parecido, sin encadenar)
+      for (const p of pixels) {
+        const xx = p % w
+        const yy = (p / w) | 0
+        for (const q of [xx > 0 ? p - 1 : -1, xx < w - 1 ? p + 1 : -1, yy > 0 ? p - w : -1, yy < h - 1 ? p + w : -1]) {
+          if (q < 0 || out[q] || data[q * 4 + 3] < 128) continue
+          const d = (data[q * 4] - cr) ** 2 + (data[q * 4 + 1] - cg) ** 2 + (data[q * 4 + 2] - cb) ** 2
+          if (d < RING2) { out[q] = 1; area++ }
+        }
+      }
+      if (!seed) seed = { x, y }
+      if (pixels.length > bestArea) {
+        bestArea = pixels.length
+        bestHex = '#' + [cr, cg, cb].map((v) => v.toString(16).padStart(2, '0')).join('')
+      }
+    }
+  }
+  if (!area || !seed) return null
+  return { seed, hex: bestHex, mask: out, bbox: { x0, y0, x1: x1 - 1, y1: y1 - 1 }, area }
+}
+
 /** Máscara de TODOS los píxeles opacos del rect (para RESTAR una zona de la selección). */
 export function rectMask(raster: Raster, rect: { x: number; y: number; w: number; h: number }): Uint8Array | null {
   const { data, w, h } = raster

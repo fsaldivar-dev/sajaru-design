@@ -168,7 +168,7 @@ La **barra de estado** (abajo del lienzo) siempre muestra el zoom y qué hace la
 ¿Querés cambiar el color de **una** letra, **un** escudo o **la** playera — sin tocar el resto de ese color? No uses la capa: **seleccionalo en el preview**. Lo seleccionado siempre **se resalta en celeste** ANTES de tocar nada.
 
 1. **Clic sobre un objeto** → selecciona esa pieza conectada.
-2. **Arrastrá un marco** → selecciona el **color dominante DENTRO del marco**, aunque sean mil fragmentos sueltos (una letra texturizada entra entera) y aunque ese color siga fuera del marco (el marco corta).
+2. **Arrastrá un marco** → selecciona las **FIGURAS contenidas, con TODOS sus colores**: una letra entra entera (cuerpo, sombras, brillos), aunque sean mil fragmentos. El fondo y lo que fluye fuera del marco no entran. En la barra tenés el conmutador **Figuras / Un color** ("Un color" = solo el dominante del marco, para cortar zonas).
 3. **⌥ (alt) + arrastrá** → **RESTA** esa zona de la selección. El caso clásico: el gorro y la playera comparten color y se tocan por los contornos — clic en la playera (se seleccionan los dos), **⌥ sobre el gorro**, y quedó solo la playera.
 4. **Shift** suma (clic o marco). **Escape** o clic en el vacío deselecciona.
 5. En la **barra de acciones**: elegí el color y tocá **Recolorear**, **Borrar** (tecla **Supr**), o — si la selección es un marco — **Emparejar** (funde la zona a su color dominante: tapa manchitas y líneas de borde).

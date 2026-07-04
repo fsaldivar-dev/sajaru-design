@@ -262,7 +262,7 @@ La herramienta te tira **sugerencias** según lo que detecta (por ejemplo, te pr
 4. **Navegá el lienzo** como en Figma/Illustrator: **scroll** (dos dedos) = desplazar · **pinch** o **⌘ + scroll** = zoom hacia el cursor · **espacio + arrastrar** = mano (en cualquier modo) · **doble clic** = ajustar a la ventana. La barra de estado (abajo del lienzo) muestra el zoom y la ayuda de la herramienta activa.
 5. **Seleccioná y editá** (estilo Illustrator — la selección siempre **se resalta en celeste** antes de tocar nada):
    - **Clic sobre un objeto** (una letra, el gorro, un escudo) = selecciona esa pieza conectada.
-   - **Arrastrá un marco** = selecciona el **color dominante DENTRO del marco** aunque no esté conectado (los fragmentos de una letra texturizada entran todos de una) y aunque ese color siga fuera del marco (el marco corta).
+   - **Arrastrá un marco** = selecciona las **FIGURAS contenidas en el marco, con TODOS sus colores** (la letra entra entera: cuerpo, sombras y brillos). El fondo y lo que fluye fuera del marco quedan afuera. En la barra podés cambiar a **"Un color"** (solo el color dominante del marco — para cortar la playera del gorro); si el marco no contiene ninguna figura, cae solo a ese modo.
    - **⌥ (alt) + arrastrá** = **RESTA** esa zona de la selección — así separás la playera del gorro aunque compartan color y se toquen: clic en la playera, ⌥ sobre el gorro, listo.
    - **Shift** suma (clic o marco); **Escape** o clic en vacío deselecciona.
    - Con la selección activa, la **barra de acciones**: **Recolorear**, **Borrar** (tecla Supr), **Emparejar** (la zona del marco se funde a su color dominante — tapa suciedad y líneas de borde) o **Guardar como grupo**.

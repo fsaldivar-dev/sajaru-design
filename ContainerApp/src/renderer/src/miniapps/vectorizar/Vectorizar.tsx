@@ -19,6 +19,7 @@ import { useShell } from '@renderer/lib/shell'
 import { OP_COST, recordUsage } from '@renderer/lib/premium'
 import {
   buildOverlayFromMask,
+  containedFiguresMask,
   effectiveMask,
   floodComponent,
   hitComponent,
@@ -51,12 +52,17 @@ interface SourceImage {
  *  entradas (un rect = 1; recolorear un grupo de 8 objetos = 8, se deshace como UN paso). */
 type UAction = { kind: 'palette' } | { kind: 'fill'; n: number }
 
-/** Pieza de la SELECCIÓN: un componente conectado (clic) o una marquesina por color
- *  (arrastre — el color dominante DENTRO del marco, aunque no esté conectado). */
+/** Pieza de la SELECCIÓN: un componente conectado (clic) o una marquesina (arrastre).
+ *  La marquesina tiene dos alcances: 'figuras' = los componentes CONTENIDOS en el marco,
+ *  con todos sus colores (una letra entra entera, con sombras y brillos — el fondo y el
+ *  linework que fluyen fuera del marco quedan afuera); 'color' = los píxeles del color
+ *  dominante dentro del marco (para cortar la playera del gorro). Default: figuras, con
+ *  caída automática a color si el marco no contiene ninguna figura. */
 type SelComp = Component & {
   kind: 'comp' | 'marquee'
-  /** Rect original de la marquesina (px de imagen) — lo usa "Emparejar". */
+  /** Rect original de la marquesina (px de imagen) — lo usan "Emparejar" y el conmutador. */
   rect?: { x: number; y: number; w: number; h: number }
+  scope?: 'figuras' | 'color'
 }
 
 /**
@@ -605,9 +611,13 @@ export default function Vectorizar(): React.JSX.Element {
       if (m && selComps.length) setSelSubs((s) => [...s, m])
       return
     }
-    const comp = marqueeMask(raster, rect)
+    // FIGURAS contenidas primero (la semántica Illustrator: la letra entra entera con todos
+    // sus colores); si el marco no contiene ninguna figura (p.ej. la playera, cuyo
+    // componente fluye fuera), cae al color dominante del marco.
+    const figures = containedFiguresMask(raster, rect)
+    const comp = figures ?? marqueeMask(raster, rect)
     if (!comp) return
-    const tagged: SelComp = { ...comp, kind: 'marquee', rect }
+    const tagged: SelComp = { ...comp, kind: 'marquee', rect, scope: figures ? 'figuras' : 'color' }
     if (opts.additive) {
       setSelComps((s) => [...s, tagged])
       return
@@ -616,6 +626,23 @@ export default function Vectorizar(): React.JSX.Element {
     setSelSubs([])
     setActionColor(comp.hex)
   }
+
+  /** Conmutador del alcance del marco (barra contextual): re-computa TODAS las marquesinas
+   *  de la selección con el alcance elegido — instantáneo, es puro cálculo local. */
+  function setMarqueeScope(scope: 'figuras' | 'color'): void {
+    const raster = rasterRef.current
+    if (!raster) return
+    setSelComps((s) =>
+      s.map((c) => {
+        if (c.kind !== 'marquee' || !c.rect) return c
+        const next = scope === 'figuras' ? containedFiguresMask(raster, c.rect) : marqueeMask(raster, c.rect)
+        return next ? { ...next, kind: 'marquee' as const, rect: c.rect, scope } : c
+      })
+    )
+  }
+
+  const marqueesInSel = selComps.filter((c) => c.kind === 'marquee')
+  const activeScope = marqueesInSel.length ? marqueesInSel[marqueesInSel.length - 1].scope : undefined
 
   /** ¿La selección son SOLO componentes de clic, sin restas? (→ va por semillas y puede
    *  guardarse como grupo; si no, viaja como máscara exacta). */
@@ -825,7 +852,7 @@ export default function Vectorizar(): React.JSX.Element {
       ? 'Motor Premium: editá las capas en el panel · la edición de objetos/zonas es del motor Local'
       : selComps.length
         ? '⌥ + arrastrá RESTA una zona · shift suma · Supr borra · Escape deselecciona'
-        : 'clic = objeto · arrastrá = zona por color · scroll/espacio = mover · pinch o ⌘ scroll = zoom'
+        : 'clic = objeto · arrastrá = figuras del marco · scroll/espacio = mover · pinch o ⌘ scroll = zoom'
 
   return (
     <div className="flex h-full flex-col">
@@ -989,7 +1016,9 @@ export default function Vectorizar(): React.JSX.Element {
                   <span className="text-xs font-medium">
                     {selComps.length === 1
                       ? selComps[0].kind === 'marquee'
-                        ? 'zona (color dominante)'
+                        ? selComps[0].scope === 'figuras'
+                          ? 'figuras del marco'
+                          : 'zona (un color)'
                         : '1 objeto'
                       : `${selComps.length} piezas`}
                     {selSubs.length > 0 && (
@@ -997,6 +1026,31 @@ export default function Vectorizar(): React.JSX.Element {
                     )}
                     {selHasBg && <span className="ml-1 font-semibold text-amber-600 dark:text-amber-400">· incluye el FONDO</span>}
                   </span>
+                  {marqueesInSel.length > 0 && (
+                    <span className="flex items-center gap-0.5">
+                      {(
+                        [
+                          { s: 'figuras' as const, label: 'Figuras', tip: 'El marco selecciona las figuras CONTENIDAS, con todos sus colores (la letra entera)' },
+                          { s: 'color' as const, label: 'Un color', tip: 'El marco selecciona solo el color dominante de la zona (corta lo que sigue afuera)' }
+                        ]
+                      ).map(({ s, label, tip }) => (
+                        <button
+                          key={s}
+                          type="button"
+                          title={tip}
+                          onClick={() => setMarqueeScope(s)}
+                          className={cn(
+                            'rounded-md border px-1.5 py-0.5 text-[10px] font-medium transition',
+                            activeScope === s
+                              ? 'border-foreground bg-foreground text-background'
+                              : 'border-border text-muted-foreground hover:text-foreground'
+                          )}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </span>
+                  )}
                   <span className="mx-0.5 text-xs text-muted-foreground">→</span>
                   <label
                     className="relative h-6 w-8 shrink-0 cursor-pointer overflow-hidden rounded-md border border-border"
