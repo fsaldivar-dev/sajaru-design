@@ -230,6 +230,33 @@ export function containedFiguresMask(
   return { seed, hex: bestHex, mask: out, bbox: { x0, y0, x1: x1 - 1, y1: y1 - 1 }, area }
 }
 
+/** TODOS los píxeles del color dado (± tol) en la imagen — "seleccionar el contenido de la
+ *  capa" desde el panel, estilo Illustrator. Devuelve un pseudo-componente por máscara. */
+export function colorMask(raster: Raster, rgb: { r: number; g: number; b: number }): Component | null {
+  const { data, w, h } = raster
+  const mask = new Uint8Array(w * h)
+  let area = 0
+  let seed: { x: number; y: number } | null = null
+  let x0 = w, y0 = h, x1 = 0, y1 = 0
+  for (let p = 0; p < w * h; p++) {
+    if (data[p * 4 + 3] < 128) continue
+    const d = (data[p * 4] - rgb.r) ** 2 + (data[p * 4 + 1] - rgb.g) ** 2 + (data[p * 4 + 2] - rgb.b) ** 2
+    if (d >= TOL2) continue
+    mask[p] = 1
+    area++
+    const x = p % w
+    const y = (p / w) | 0
+    if (!seed) seed = { x, y }
+    if (x < x0) x0 = x
+    if (x > x1) x1 = x
+    if (y < y0) y0 = y
+    if (y > y1) y1 = y
+  }
+  if (!area || !seed) return null
+  const hex = '#' + [rgb.r, rgb.g, rgb.b].map((v) => v.toString(16).padStart(2, '0')).join('')
+  return { seed, hex, mask, bbox: { x0, y0, x1, y1 }, area }
+}
+
 /** Máscara de TODOS los píxeles opacos del rect (para RESTAR una zona de la selección). */
 export function rectMask(raster: Raster, rect: { x: number; y: number; w: number; h: number }): Uint8Array | null {
   const { data, w, h } = raster

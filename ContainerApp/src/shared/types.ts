@@ -119,6 +119,8 @@ export interface VectorGroup {
   maskH?: number
   /** Apartado: no se ve ni se selecciona en el lienzo (para afinar el resto). */
   hidden?: boolean
+  /** Candado: visible pero protegido — ni el clic ni el marco lo agarran. */
+  locked?: boolean
 }
 
 /** Config que la mini app Mejorar manda al comando `enhance` del sidecar. */

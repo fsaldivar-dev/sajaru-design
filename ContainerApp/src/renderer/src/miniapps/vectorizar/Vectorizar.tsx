@@ -4,6 +4,9 @@ import {
   Download,
   Eye,
   EyeOff,
+  Lock,
+  LockOpen,
+  MousePointer2,
   Redo2,
   ScanEye,
   Trash2,
@@ -19,6 +22,7 @@ import { useShell } from '@renderer/lib/shell'
 import { OP_COST, recordUsage } from '@renderer/lib/premium'
 import {
   buildOverlayFromMask,
+  colorMask,
   containedFiguresMask,
   effectiveMask,
   floodComponent,
@@ -115,6 +119,9 @@ export default function Vectorizar(): React.JSX.Element {
   // rasterTick avisa que el raster del resultado terminó de cargar.
   const [hiddenTick, setHiddenTick] = useState(0)
   const [rasterTick, setRasterTick] = useState(0)
+  // CANDADO por capa (índice de la paleta): visible pero protegida — ni el clic ni el
+  // marco agarran esos píxeles. Sesión-local; se limpia cuando la paleta se re-detecta.
+  const [lockedColors, setLockedColors] = useState<number[]>([])
 
   const tokenRef = useRef(0)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -253,23 +260,46 @@ export default function Vectorizar(): React.JSX.Element {
     return mask
   }
 
-  // APARTADOS: recomputa el raster de selección (píxeles apartados → alfa 0) y el wash
-  // visual, cada vez que cambia qué grupos están ocultos o carga un resultado nuevo.
-  const hiddenIds = groups.filter((g) => g.hidden).map((g) => g.id).join(',')
+  // PROTEGIDOS: recomputa el raster de selección apagando (alfa 0) los grupos apartados
+  // (ojo) y bloqueados (candado) y las CAPAS con candado — ni el clic ni el marco los
+  // agarran. Wash oscuro SOLO para los apartados (lo bloqueado se ve normal).
+  const protectKey =
+    groups.filter((g) => g.hidden || g.locked).map((g) => `${g.id}${g.hidden ? 'h' : ''}${g.locked ? 'l' : ''}`).join(',') +
+    '|' +
+    lockedColors.join(',')
   useEffect(() => {
     let dead = false
     const raster = rasterRef.current
     selRasterRef.current = null
     hiddenWashRef.current = null
     setHiddenTick((t) => t + 1)
-    if (!raster || !hiddenIds) return
     const hs = groups.filter((g) => g.hidden)
-    void Promise.all(hs.map((g) => resolveGroupMask(g, raster))).then((masks) => {
+    const ls = groups.filter((g) => g.locked && !g.hidden)
+    if (!raster || (!hs.length && !ls.length && !lockedColors.length)) return
+    void Promise.all([...hs, ...ls].map((g) => resolveGroupMask(g, raster))).then((masks) => {
       if (dead) return
-      const union = new Uint8Array(raster.w * raster.h)
-      for (const m of masks) if (m) for (let p = 0; p < union.length; p++) if (m[p]) union[p] = 1
+      const N = raster.w * raster.h
+      const off = new Uint8Array(N) // todo lo NO seleccionable
+      const wash = new Uint8Array(N) // solo lo apartado (velo visual)
+      masks.forEach((m, i) => {
+        if (!m) return
+        const isHidden = i < hs.length
+        for (let p = 0; p < N; p++) {
+          if (!m[p]) continue
+          off[p] = 1
+          if (isHidden) wash[p] = 1
+        }
+      })
+      // capas con candado: apagar los píxeles del color VIGENTE de cada una
+      for (const idx of lockedColors) {
+        const c0 = palette[idx]
+        if (!c0) continue
+        const cur = config.edit?.[idx]?.to ?? c0
+        const cm = colorMask(raster, cur)
+        if (cm) for (let p = 0; p < N; p++) if (cm.mask[p]) off[p] = 1
+      }
       const data = new Uint8ClampedArray(raster.data)
-      for (let p = 0; p < union.length; p++) if (union[p]) data[p * 4 + 3] = 0
+      for (let p = 0; p < N; p++) if (off[p]) data[p * 4 + 3] = 0
       selRasterRef.current = { data, w: raster.w, h: raster.h }
       const c = document.createElement('canvas')
       c.width = raster.w
@@ -277,8 +307,8 @@ export default function Vectorizar(): React.JSX.Element {
       const g2 = c.getContext('2d')
       if (g2) {
         const im = g2.createImageData(raster.w, raster.h)
-        for (let p = 0; p < union.length; p++) {
-          if (!union[p]) continue
+        for (let p = 0; p < N; p++) {
+          if (!wash[p]) continue
           const i = p * 4
           im.data[i] = 12
           im.data[i + 1] = 14
@@ -294,7 +324,7 @@ export default function Vectorizar(): React.JSX.Element {
       dead = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hiddenIds, rasterTick])
+  }, [protectKey, rasterTick])
 
   /** Raster que VEN las herramientas de selección (sin los grupos apartados). */
   const selRaster = (): Raster | null => selRasterRef.current ?? rasterRef.current
@@ -356,7 +386,11 @@ export default function Vectorizar(): React.JSX.Element {
       setResult({ url })
     }
     // La paleta se refresca SOLO cuando re-detectamos (sin edición); al editar la conservamos.
-    if (!cfg.edit) setPalette(r.palette ?? [])
+    // Los candados por capa son por índice: mueren con la re-detección.
+    if (!cfg.edit) {
+      setPalette(r.palette ?? [])
+      setLockedColors([])
+    }
   }
 
   async function onFile(file: File): Promise<void> {
@@ -741,7 +775,9 @@ export default function Vectorizar(): React.JSX.Element {
     )
   }
 
-  const marqueesInSel = selComps.filter((c) => c.kind === 'marquee')
+  // Solo las marquesinas de ARRASTRE tienen rect (las selecciones desde el panel no):
+  // los pills Figuras/Un color aplican a las primeras.
+  const marqueesInSel = selComps.filter((c) => c.kind === 'marquee' && c.rect)
   const activeScope = marqueesInSel.length ? marqueesInSel[marqueesInSel.length - 1].scope : undefined
 
   /** ¿La selección son SOLO componentes de clic, sin restas? (→ va por semillas y puede
@@ -955,6 +991,64 @@ export default function Vectorizar(): React.JSX.Element {
     const next = groups.map((g) => (g.id === id ? { ...g, hidden: !g.hidden } : g))
     setGroups(next)
     void window.api.vectorize.groupsSet(next)
+  }
+
+  /** Candado del grupo: visible pero protegido (ni clic ni marco lo agarran). */
+  function toggleGroupLocked(id: string): void {
+    const next = groups.map((g) => (g.id === id ? { ...g, locked: !g.locked } : g))
+    setGroups(next)
+    void window.api.vectorize.groupsSet(next)
+  }
+
+  /** Candado de una CAPA: sus píxeles quedan protegidos de clics y marcos — bloqueá el
+   *  linework oscuro y marqueá libre sin llevarte los contornos. */
+  function toggleLayerLock(i: number): void {
+    setLockedColors((ls) => (ls.includes(i) ? ls.filter((x) => x !== i) : [...ls, i]))
+  }
+
+  /** ⌖ de la fila de CAPA: selecciona TODOS los píxeles de ese color en el lienzo (estilo
+   *  "seleccionar contenido de la capa" de Illustrator) — de ahí podés restar con ⌥,
+   *  recolorear, o guardarlo como grupo. Shift suma a la selección actual. */
+  function selectLayerContents(i: number, additive: boolean): void {
+    const raster = selRaster()
+    const c0 = palette[i]
+    if (!raster || !c0 || busy) return
+    const cur = config.edit?.[i]?.to ?? c0
+    const comp = colorMask(raster, cur)
+    if (!comp) return
+    const tagged: SelComp = { ...comp, kind: 'marquee' }
+    setSelComps((s) => (additive ? [...s, tagged] : [tagged]))
+    if (!additive) {
+      setSelSubs([])
+      setActionColor(comp.hex)
+    }
+  }
+
+  /** ⌖ de la fila de GRUPO: recupera el esténcil del grupo como selección viva (para
+   *  perfeccionarlo: restar con ⌥, sumar piezas y re-guardar o «Añadir a»). */
+  async function selectGroupContents(g: VectorGroup, additive: boolean): Promise<void> {
+    const raster = rasterRef.current
+    if (!raster || busy) return
+    const m = await resolveGroupMask(g, raster)
+    if (!m) return
+    let area = 0
+    let seed: { x: number; y: number } | null = null
+    for (let p = 0; p < m.length; p++) {
+      if (!m[p]) continue
+      area++
+      if (!seed) seed = { x: p % raster.w, y: (p / raster.w) | 0 }
+    }
+    if (!area || !seed) return
+    const comp: SelComp = {
+      kind: 'marquee',
+      seed,
+      hex: g.color ?? '#3898ff',
+      mask: m,
+      bbox: { x0: 0, y0: 0, x1: raster.w - 1, y1: raster.h - 1 },
+      area
+    }
+    setSelComps((s) => (additive ? [...s, comp] : [comp]))
+    if (!additive) setSelSubs([])
   }
 
   function renameGroup(id: string, name: string): void {
@@ -1468,7 +1562,9 @@ export default function Vectorizar(): React.JSX.Element {
               <p className="mb-2 text-[11px] leading-snug text-muted-foreground">
                 La capa cambia <span className="font-semibold">todos</span> los objetos de ese
                 color — para uno solo, hacé <span className="font-semibold">clic sobre él</span> en el lienzo.
-                Ojo = ocultar · ojo enmarcado = ver sola · flecha = exportar la capa (SVG).
+                Tocá el <span className="font-semibold">HEX</span> para seleccionar esos píxeles ·
+                candado = protegida (el marco no la agarra) · ojo = ocultar · ojo enmarcado = ver
+                sola · flecha = exportar la capa (SVG).
               </p>
               <div className="space-y-1.5">
                 {palette.map((c, i) => {
@@ -1500,14 +1596,34 @@ export default function Vectorizar(): React.JSX.Element {
                           className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
                         />
                       </label>
-                      <span
+                      <button
+                        type="button"
+                        disabled={busy || hidden || lockedColors.includes(i)}
+                        title="Seleccionar TODOS los píxeles de este color en el lienzo (shift = sumar) — de ahí: restar con ⌥, recolorear, guardar como grupo"
+                        onClick={(ev) => selectLayerContents(i, ev.shiftKey)}
                         className={cn(
-                          'flex-1 truncate font-mono text-xs text-muted-foreground',
+                          'min-w-0 flex-1 truncate rounded px-1 text-left font-mono text-xs text-muted-foreground transition hover:bg-muted hover:text-foreground disabled:opacity-40',
                           hidden && 'line-through'
                         )}
                       >
                         {rgbToHex(cur).toUpperCase()}
-                      </span>
+                      </button>
+                      <button
+                        type="button"
+                        title={
+                          lockedColors.includes(i)
+                            ? 'Desbloquear'
+                            : 'Candado: visible pero protegida — ni el clic ni el marco agarran este color'
+                        }
+                        disabled={busy}
+                        onClick={() => toggleLayerLock(i)}
+                        className={cn(
+                          'flex h-7 w-6 shrink-0 items-center justify-center rounded-md transition hover:text-foreground disabled:opacity-40',
+                          lockedColors.includes(i) ? 'text-foreground' : 'text-muted-foreground/60'
+                        )}
+                      >
+                        {lockedColors.includes(i) ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
+                      </button>
                       <button
                         type="button"
                         title={isolated ? 'Mostrar todas' : 'Ver sola esta capa'}
@@ -1586,14 +1702,36 @@ export default function Vectorizar(): React.JSX.Element {
                       }}
                       className="w-0 min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 py-1 text-xs font-medium outline-none transition focus:border-border"
                     />
-                    <span className="shrink-0 text-[11px] text-muted-foreground">
-                      {g.maskPng ? 'marco' : `${g.seeds.length} obj`}
-                    </span>
+                    <button
+                      type="button"
+                      disabled={busy || g.hidden}
+                      title="Recuperar el grupo como selección viva (shift = sumar) — para afinarlo: restar con ⌥, sumar piezas, re-guardar o «Añadir a»"
+                      onClick={(ev) => void selectGroupContents(g, ev.shiftKey)}
+                      className="flex h-7 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground disabled:opacity-40"
+                    >
+                      <MousePointer2 className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      title={
+                        g.locked
+                          ? 'Desbloquear'
+                          : 'Candado: visible pero protegido — ni el clic ni el marco lo agarran'
+                      }
+                      onClick={() => toggleGroupLocked(g.id)}
+                      className={cn(
+                        'flex h-7 w-6 shrink-0 items-center justify-center rounded-md transition hover:text-foreground disabled:opacity-40',
+                        g.locked ? 'text-foreground' : 'text-muted-foreground/60'
+                      )}
+                    >
+                      {g.locked ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
+                    </button>
                     <button
                       type="button"
                       title="Eliminar el grupo (no toca el diseño)"
                       onClick={() => deleteGroup(g.id)}
-                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground"
+                      className="flex h-7 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -1601,8 +1739,8 @@ export default function Vectorizar(): React.JSX.Element {
                 ))}
               </div>
               <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
-                Swatch = recolorear todo el grupo · mouse encima = verlo en el lienzo ·
-                ojo = apartarlo (no se ve ni se selecciona, para afinar el resto) · con una
+                Swatch = recolorear todo el grupo · ⌖ = recuperarlo como selección ·
+                candado = protegido · ojo = apartarlo (no se ve ni se selecciona) · con una
                 selección activa, «Añadir a» la suma a un grupo existente.
               </p>
             </div>
