@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChevronDown,
+  ChevronRight,
   Download,
   Eye,
   EyeOff,
@@ -122,6 +123,10 @@ export default function Vectorizar(): React.JSX.Element {
   // CANDADO por capa (índice de la paleta): visible pero protegida — ni el clic ni el
   // marco agarran esos píxeles. Sesión-local; se limpia cuando la paleta se re-detecta.
   const [lockedColors, setLockedColors] = useState<number[]>([])
+  // Grupo EXPANDIDO (chevron): muestra su mini-paleta viva — los colores que el esténcil
+  // contiene HOY. Tocar uno recolorea SOLO ese color dentro del grupo (mask ∩ color).
+  const [expandedGroup, setExpandedGroup] = useState<string | null>(null)
+  const [groupColors, setGroupColors] = useState<Array<{ hex: string; n: number }>>([])
 
   const tokenRef = useRef(0)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -135,6 +140,8 @@ export default function Vectorizar(): React.JSX.Element {
   const hiddenWashRef = useRef<HTMLCanvasElement | null>(null)
   const hoverCacheRef = useRef<Map<string, Component[]>>(new Map())
   const layerNoteTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  // El picker nativo dispara onChange en CADA tick del arrastre: coalescemos a UNA edición.
+  const groupColorDebounce = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const hasImage = Boolean(source)
   const busy = progress !== null
   // La edición raster (objetos/zonas) consolida re-trazando LOCAL: con IA Premium el SVG
@@ -1013,6 +1020,73 @@ export default function Vectorizar(): React.JSX.Element {
     void window.api.vectorize.groupsSet(next)
   }
 
+  // Mini-paleta del grupo expandido: colores EXACTOS que el esténcil contiene hoy (se
+  // recomputa tras cada edición vía rasterTick). Umbral chico para ignorar motas de AA.
+  useEffect(() => {
+    if (!expandedGroup) {
+      setGroupColors([])
+      return
+    }
+    const raster = rasterRef.current
+    const g = groups.find((x) => x.id === expandedGroup)
+    if (!raster || !g) {
+      setGroupColors([])
+      return
+    }
+    let dead = false
+    void resolveGroupMask(g, raster).then((m) => {
+      if (dead || !m) return
+      const counts = new Map<number, number>()
+      let area = 0
+      for (let p = 0; p < m.length; p++) {
+        if (!m[p] || raster.data[p * 4 + 3] < 128) continue
+        area++
+        const k = (raster.data[p * 4] << 16) | (raster.data[p * 4 + 1] << 8) | raster.data[p * 4 + 2]
+        counts.set(k, (counts.get(k) ?? 0) + 1)
+      }
+      const min = Math.max(24, Math.floor(area * 0.004))
+      const list = [...counts.entries()]
+        .filter(([, n]) => n >= min)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10)
+        .map(([k, n]) => ({
+          hex:
+            '#' +
+            [(k >> 16) & 255, (k >> 8) & 255, k & 255].map((v) => v.toString(16).padStart(2, '0')).join(''),
+          n
+        }))
+      setGroupColors(list)
+    })
+    return () => {
+      dead = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expandedGroup, groups, rasterTick])
+
+  /** Recolorea UN color DENTRO del grupo (esténcil ∩ color): "el gris de la banda del
+   *  gorro", sin tocar ese gris en el resto del diseño ni los demás colores del gorro. */
+  async function recolorGroupColor(g: VectorGroup, fromHex: string, toHex: string): Promise<void> {
+    const raster = rasterRef.current
+    if (!raster || busy) return
+    const m = await resolveGroupMask(g, raster)
+    if (!m) return
+    const c = hexToRgb(fromHex)
+    const mask2 = new Uint8Array(m.length)
+    let area = 0
+    for (let p = 0; p < m.length; p++) {
+      if (!m[p] || raster.data[p * 4 + 3] < 128) continue
+      const d =
+        (raster.data[p * 4] - c.r) ** 2 + (raster.data[p * 4 + 1] - c.g) ** 2 + (raster.data[p * 4 + 2] - c.b) ** 2
+      if (d < 144) {
+        mask2[p] = 1
+        area++
+      }
+    }
+    if (!area) return
+    const bytes = await maskToPngBytes(raster.w, raster.h, mask2)
+    await runMaskEdit(bytes, 'recolor', toHex)
+  }
+
   /** Ojo del grupo: apartado = no se ve (velo oscuro) ni se selecciona — para afinar la
    *  selección de lo que falta sin que el marco agarre lo ya agrupado. */
   function toggleGroupHidden(id: string): void {
@@ -1699,10 +1773,10 @@ export default function Vectorizar(): React.JSX.Element {
               <label className="mb-2 block text-sm font-medium">Grupos · {groups.length}</label>
               <div className="space-y-1.5">
                 {groups.map((g) => (
+                  <div key={g.id}>
                   <div
-                    key={g.id}
                     className={cn(
-                      'flex items-center gap-1.5 rounded-md px-1 py-0.5 transition',
+                      'flex items-center gap-1 rounded-md px-1 py-0.5 transition',
                       groupHover === g.id && 'bg-sky-400/10',
                       g.hidden && 'opacity-50'
                     )}
@@ -1710,9 +1784,19 @@ export default function Vectorizar(): React.JSX.Element {
                   >
                     <button
                       type="button"
+                      title="Ver los COLORES del grupo (tocá uno para cambiarlo solo dentro del grupo)"
+                      onClick={() => setExpandedGroup((e) => (e === g.id ? null : g.id))}
+                      className="flex h-7 w-4 shrink-0 items-center justify-center rounded text-muted-foreground transition hover:text-foreground"
+                    >
+                      <ChevronRight
+                        className={cn('h-3.5 w-3.5 transition-transform', expandedGroup === g.id && 'rotate-90')}
+                      />
+                    </button>
+                    <button
+                      type="button"
                       title={g.hidden ? 'Traer de vuelta al lienzo' : 'Apartar: no se ve ni se selecciona (para afinar el resto)'}
                       onClick={() => toggleGroupHidden(g.id)}
-                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground"
+                      className="flex h-7 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground"
                     >
                       {g.hidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                     </button>
@@ -1725,7 +1809,11 @@ export default function Vectorizar(): React.JSX.Element {
                         type="color"
                         value={g.color ?? '#888888'}
                         disabled={busy}
-                        onChange={(ev) => void recolorGroup(g, ev.target.value)}
+                        onChange={(ev) => {
+                          const v = ev.target.value
+                          clearTimeout(groupColorDebounce.current)
+                          groupColorDebounce.current = setTimeout(() => void recolorGroup(g, v), 500)
+                        }}
                         className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
                       />
                     </label>
@@ -1773,12 +1861,51 @@ export default function Vectorizar(): React.JSX.Element {
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
                   </div>
+                  {/* Mini-paleta del grupo: LOS colores que contiene hoy. Tocá uno y cambia
+                      SOLO ese color dentro del grupo (esténcil ∩ color) — "el gris de la
+                      banda del gorro" sin tocar los grises del resto del diseño. */}
+                  {expandedGroup === g.id && (
+                    <div className="mb-1 ml-6 space-y-1 border-l border-border pl-2 pt-1">
+                      {groupColors.length === 0 && (
+                        <p className="text-[10px] text-muted-foreground">Leyendo los colores del grupo…</p>
+                      )}
+                      {groupColors.map((c) => (
+                        <div key={c.hex} className="flex items-center gap-1.5">
+                          <label
+                            title="Cambiar SOLO este color dentro del grupo"
+                            className="relative h-5 w-6 shrink-0 cursor-pointer overflow-hidden rounded border border-border"
+                          >
+                            <span className="absolute inset-0" style={{ backgroundColor: c.hex }} />
+                            <input
+                              type="color"
+                              value={c.hex}
+                              disabled={busy}
+                              onChange={(ev) => {
+                                const v = ev.target.value
+                                clearTimeout(groupColorDebounce.current)
+                                groupColorDebounce.current = setTimeout(
+                                  () => void recolorGroupColor(g, c.hex, v),
+                                  500
+                                )
+                              }}
+                              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                            />
+                          </label>
+                          <span className="flex-1 truncate font-mono text-[10px] text-muted-foreground">
+                            {c.hex.toUpperCase()}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  </div>
                 ))}
               </div>
               <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
-                Swatch = recolorear todo el grupo · ⌖ = recuperarlo como selección ·
-                candado = protegido · ojo = apartarlo (no se ve ni se selecciona) · con una
-                selección activa, «Añadir a» la suma a un grupo existente.
+                Flechita = ver LOS COLORES del grupo (tocá uno y cambia solo dentro del
+                grupo) · swatch = teñir todo el grupo (conserva sombras) · ⌖ = recuperarlo
+                como selección · candado = protegido · ojo = apartarlo · «Añadir a» suma la
+                selección activa a un grupo.
               </p>
             </div>
           )}
