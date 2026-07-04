@@ -44,6 +44,23 @@ let areaFills: Array<{
   /** Color destino (#rrggbb) cuando mode === 'recolor'. */
   to?: string
 }> = []
+type AreaFillEntry = (typeof areaFills)[number]
+// Pila de REHACER por PASOS: cada paso es el lote de ediciones de UNA acción del usuario
+// (un rect = 1 entrada; recolorear un grupo de 8 letras = 8 entradas juntas). Se vacía
+// cuando el usuario hace una edición nueva (historial lineal clásico).
+let redoFills: AreaFillEntry[][] = []
+// Raster BASE del último trazado (primera generación, SIN ediciones) + su resultado: es el
+// punto de partida para re-aplicar `areaFills` al deshacer de a una.
+let baseRaster: string | null = null
+let baseResult: { png: string; svg: string } | null = null
+// GRUPOS con nombre del diseñador ("Letras", "Gorro"…): semillas normalizadas de objetos.
+// Viven acá (no en el renderer) para sobrevivir cambios de mini app, igual que areaFills.
+let groups: Array<{
+  id: string
+  name: string
+  color?: string
+  seeds: Array<{ px: number; py: number }>
+}> = []
 let counter = 0
 
 async function setImage(bytes: ArrayBuffer, name: string): Promise<void> {
@@ -56,6 +73,10 @@ async function setImage(bytes: ArrayBuffer, name: string): Promise<void> {
   lastResult = null
   recraftBaseSvg = null
   areaFills = []
+  redoFills = []
+  baseRaster = null
+  baseResult = null
+  groups = []
 }
 
 /**
@@ -143,6 +164,9 @@ async function process(config: VectorizeConfig, sender: WebContents): Promise<Bg
     let svgPath = String(data?.svg ?? out.replace(/\.[^.]+$/, '.svg'))
     // Metadatos para consolidar ediciones al vector (paleta fija del trazado actual).
     lastTrace = { palette: data?.palette ?? [], size: config.size, method: config.method }
+    // Base del deshacer de a una: el trazado limpio ANTES de re-aplicar ediciones.
+    baseRaster = pngPath0
+    baseResult = { png: pngPath0, svg: svgPath }
     // Re-aplicá las ediciones de zona/objeto sobre el PNG recién trazado (persisten entre
     // re-trazados) y CONSOLIDALAS al vector: el SVG exportado refleja lo que se ve.
     let pngPath = areaFills.length ? await applyAreaFills(pngPath0, sender) : pngPath0
@@ -184,6 +208,7 @@ async function areaFill(
   sender: WebContents
 ): Promise<BgProcessResult> {
   if (!lastResult) return { ok: false, error: { code: 'E_NO_RESULT', message: 'No hay resultado' } }
+  redoFills = [] // edición nueva: el rehacer deja de tener sentido (historial lineal)
   // Guardá la zona normalizada (0..1) para re-aplicarla tras futuros trazados.
   const { width, height } = nativeImage.createFromPath(lastResult.png).getSize()
   if (width && height) {
@@ -197,10 +222,16 @@ async function areaFill(
     })
   }
   const out = path.join(tmpRoot(TMP), `vector-${++counter}.png`)
-  const rectArg = `${Math.round(rect.x)},${Math.round(rect.y)},${Math.round(rect.w)},${Math.round(rect.h)}`
+  // El rect llega en px del PNG que VE el usuario (lastResult, consolidado) pero se aplica
+  // sobre el raster de 1ª generación — pueden diferir de tamaño (p.ej. salida 4096 con
+  // consolidación tope 2048). Escalamos al espacio del raster de entrada.
+  const input = editedRaster ?? lastResult.png
+  const inSize = nativeImage.createFromPath(input).getSize()
+  const k = width && inSize.width ? inSize.width / width : 1
+  const rectArg = `${Math.round(rect.x * k)},${Math.round(rect.y * k)},${Math.round(rect.w * k)},${Math.round(rect.h * k)}`
   const r = await runSidecar(
     [
-      'area-fill', '-i', editedRaster ?? lastResult.png, '-o', out, '--rect', rectArg,
+      'area-fill', '-i', input, '-o', out, '--rect', rectArg,
       '--mode', mode,
       ...(to ? ['--to', to] : []),
       '--events'
@@ -268,45 +299,108 @@ async function consolidateToVector(
   return { png, svg }
 }
 
-/** Modo OBJETO: click → borra/recolorea el componente conectado del color clickeado.
- *  Persiste junto a las zonas (se re-aplica tras re-trazados). `point` en px del PNG. */
+/** Modo OBJETO: borra/recolorea el componente conectado de CADA punto (la selección puede
+ *  tener N objetos — un grupo entero). Aplica los puntos en cadena sobre el raster de 1ª
+ *  generación y consolida al vector UNA sola vez al final. `points` en px del PNG. */
 async function objectEdit(
-  point: { x: number; y: number },
+  points: Array<{ x: number; y: number }>,
   mode: 'erase' | 'recolor',
   to: string | undefined,
   sender: WebContents
 ): Promise<BgProcessResult> {
   if (!lastResult) return { ok: false, error: { code: 'E_NO_RESULT', message: 'No hay resultado' } }
+  if (!points.length) return { ok: false, error: { code: 'E_NO_POINT', message: 'Sin objetos seleccionados' } }
+  redoFills = [] // edición nueva: historial lineal
   const { width, height } = nativeImage.createFromPath(lastResult.png).getSize()
   if (width && height) {
-    areaFills.push({ px: point.x / width, py: point.y / height, mode, to })
+    for (const p of points) areaFills.push({ px: p.x / width, py: p.y / height, mode, to })
   }
-  const out = path.join(tmpRoot(TMP), `vector-${++counter}.png`)
-  const r = await runSidecar(
-    [
-      'area-fill', '-i', editedRaster ?? lastResult.png, '-o', out,
-      '--point', `${Math.round(point.x)},${Math.round(point.y)}`,
-      '--mode', mode,
-      ...(to ? ['--to', to] : []),
-      '--events'
-    ],
-    sender,
-    PROGRESS_CHANNEL
-  )
-  if (!r.ok) return { ok: false, error: r.error }
+  // Los puntos llegan en px del PNG que VE el usuario (lastResult) pero se aplican sobre el
+  // raster de 1ª generación, que puede tener otro tamaño (salida 4096, consolidación 2048).
+  let cur = editedRaster ?? lastResult.png
+  const inSize = nativeImage.createFromPath(cur).getSize()
+  const k = width && inSize.width ? inSize.width / width : 1
+  for (const p of points) {
+    const out = path.join(tmpRoot(TMP), `vector-${++counter}.png`)
+    const r = await runSidecar(
+      [
+        'area-fill', '-i', cur, '-o', out,
+        '--point', `${Math.round(p.x * k)},${Math.round(p.y * k)}`,
+        '--mode', mode,
+        ...(to ? ['--to', to] : []),
+        '--events'
+      ],
+      sender,
+      PROGRESS_CHANNEL
+    )
+    if (!r.ok) return { ok: false, error: r.error }
+    cur = String((r.data as { output?: string } | undefined)?.output ?? out)
+  }
   try {
-    const data = r.data as { output?: string } | undefined
-    const pngPath = String(data?.output ?? out)
     // La cadena de ediciones vive en el raster de 1ª generación (nunca un consolidado).
-    editedRaster = pngPath
+    editedRaster = cur
     // CONSOLIDAR al vector: el SVG (y el PNG del preview) reflejan la edición.
-    const c = await consolidateToVector(pngPath, sender)
-    const finalPng = c?.png ?? pngPath
+    const c = await consolidateToVector(cur, sender)
+    const finalPng = c?.png ?? cur
     const finalSvg = c?.svg ?? lastResult.svg
     const buf = await fs.readFile(finalPng)
     lastResult = { png: finalPng, svg: finalSvg }
     const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
     return { ok: true, bytes: ab, outputName: path.basename(finalPng), format: 'png' }
+  } catch (e) {
+    return { ok: false, error: { code: 'E_READ', message: (e as Error).message } }
+  }
+}
+
+/** Deshace LA ÚLTIMA acción de zona/objeto (`count` = cuántas entradas formaron esa acción:
+ *  un grupo de 8 letras se deshace como UN paso). Re-aplica las restantes desde el raster
+ *  base y re-consolida. Devuelve el PNG resultante y cuántas ediciones quedan. */
+async function undoLastFill(
+  count: number,
+  sender: WebContents
+): Promise<BgProcessResult & { remaining?: number }> {
+  if (!baseRaster || !baseResult) {
+    return { ok: false, error: { code: 'E_NO_RESULT', message: 'No hay resultado' } }
+  }
+  if (!areaFills.length) {
+    return { ok: false, error: { code: 'E_EMPTY', message: 'No hay ediciones para deshacer' } }
+  }
+  const n = Math.max(1, Math.min(Math.round(count) || 1, areaFills.length))
+  const step = areaFills.splice(areaFills.length - n, n)
+  redoFills.push(step)
+  return rebuildFromBase(sender)
+}
+
+/** Rehace el último paso deshecho (vuelve del redo stack y re-aplica desde la base). */
+async function redoLastFill(sender: WebContents): Promise<BgProcessResult & { remaining?: number }> {
+  const step = redoFills.pop()
+  if (!step) return { ok: false, error: { code: 'E_EMPTY', message: 'No hay ediciones para rehacer' } }
+  areaFills.push(...step)
+  return rebuildFromBase(sender)
+}
+
+/** Re-aplica `areaFills` desde el raster base y consolida (o restaura el trazado limpio). */
+async function rebuildFromBase(sender: WebContents): Promise<BgProcessResult & { remaining?: number }> {
+  if (!baseRaster || !baseResult) {
+    return { ok: false, error: { code: 'E_NO_RESULT', message: 'No hay resultado' } }
+  }
+  try {
+    if (!areaFills.length) {
+      editedRaster = null
+      lastResult = { ...baseResult }
+      const buf = await fs.readFile(baseResult.png)
+      const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+      return { ok: true, bytes: ab, outputName: path.basename(baseResult.png), format: 'png', remaining: 0 }
+    }
+    const cur = await applyAreaFills(baseRaster, sender)
+    editedRaster = cur
+    const c = await consolidateToVector(cur, sender)
+    const finalPng = c?.png ?? cur
+    const finalSvg = c?.svg ?? baseResult.svg
+    const buf = await fs.readFile(finalPng)
+    lastResult = { png: finalPng, svg: finalSvg }
+    const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+    return { ok: true, bytes: ab, outputName: path.basename(finalPng), format: 'png', remaining: areaFills.length }
   } catch (e) {
     return { ok: false, error: { code: 'E_READ', message: (e as Error).message } }
   }
@@ -423,6 +517,7 @@ function copyResult(): { copied: boolean } {
 /** Borra todas las limpiezas de zona (el próximo trazado saldrá sin ellas). */
 function clearAreaFills(): { ok: boolean } {
   areaFills = []
+  redoFills = []
   return { ok: true }
 }
 
@@ -436,9 +531,16 @@ export function registerVectorizeIpc(ipcMain: IpcMain): void {
   )
   ipcMain.handle(
     'vec:objectEdit',
-    (e, point: { x: number; y: number }, mode: 'erase' | 'recolor', to?: string) =>
-      objectEdit(point, mode, to, e.sender)
+    (e, points: Array<{ x: number; y: number }>, mode: 'erase' | 'recolor', to?: string) =>
+      objectEdit(points, mode, to, e.sender)
   )
+  ipcMain.handle('vec:undoLastFill', (e, count?: number) => undoLastFill(count ?? 1, e.sender))
+  ipcMain.handle('vec:redoLastFill', (e) => redoLastFill(e.sender))
+  ipcMain.handle('vec:groupsGet', () => groups)
+  ipcMain.handle('vec:groupsSet', (_e, gs: typeof groups) => {
+    groups = Array.isArray(gs) ? gs : []
+    return { ok: true }
+  })
   ipcMain.handle('vec:clearAreaFills', () => clearAreaFills())
   ipcMain.handle('vec:saveSvg', (_e, name: string) => saveAs('svg', name))
   ipcMain.handle('vec:savePng', (_e, name: string) => saveAs('png', name))

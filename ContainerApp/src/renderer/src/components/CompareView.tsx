@@ -5,11 +5,33 @@ const MIN = 1
 const MAX = 12
 const clamp = (n: number): number => Math.min(MAX, Math.max(MIN, n))
 
+/** Clic (sin arrastre) sobre un píxel del resultado, en cualquier modo. */
+export type CanvasPick = {
+  /** Punto en píxeles de la imagen `after`. */
+  x: number
+  y: number
+  /** Punto en píxeles del viewport (para anclar UI cerca del clic). */
+  vx: number
+  vy: number
+  /** Color muestreado del píxel (null = transparente). */
+  hex: string | null
+  /** true si venía con Shift (sumar a la selección). */
+  additive: boolean
+}
+
 /**
- * Vista de resultado con zoom/pan y "mantené para ver el original". Un SOLO <canvas> que
- * dibuja UNA imagen (el resultado por defecto, o el original mientras mantenés el botón).
- * Se dibuja con un único drawImage: dibujar dos imágenes (o usar ctx.clip/clipPath) dejaba
- * el resultado sin componer en este entorno y el vector no aparecía.
+ * Lienzo de resultado con la gramática de navegación estándar de las herramientas de diseño
+ * (Figma/Illustrator/Photoshop):
+ *  - scroll de dos dedos / rueda  = DESPLAZAR (pan)
+ *  - pinch del trackpad o ⌘+scroll = ZOOM anclado al cursor
+ *  - espacio + arrastrar           = mano (en cualquier modo, incluso seleccionando)
+ *  - doble clic                    = ajustar a la ventana
+ *  - Escape                        = cancela el rectángulo a medio dibujar
+ * Cursores: crosshair al seleccionar, grab/grabbing al panear.
+ *
+ * Un SOLO <canvas> dibuja UNA imagen (el resultado, o el original mientras mantenés el botón).
+ * `overlay` (canvas a resolución nativa de `after`) se dibuja encima con el mismo transform —
+ * lo usa Vectorizar para RESALTAR la selección de objetos.
  */
 export function CompareView({
   before,
@@ -18,6 +40,9 @@ export function CompareView({
   afterLabel = 'Resultado',
   background,
   selecting = false,
+  busy = false,
+  hint,
+  overlay,
   onSelectRect,
   onPickPoint
 }: {
@@ -26,60 +51,39 @@ export function CompareView({
   beforeLabel?: string
   afterLabel?: string
   background: string
-  /** Modo "seleccionar zona": el arrastre dibuja un rectángulo en vez de hacer pan. */
+  /** Modo "zona": el arrastre dibuja un rectángulo en vez de panear. */
   selecting?: boolean
-  /** Rectángulo elegido, en píxeles de la imagen `after` (no del canvas). */
+  /** Procesando: se puede navegar pero NO editar (no dispara rect ni pick, sin perder el modo). */
+  busy?: boolean
+  /** Ayuda contextual que se muestra en la barra de estado (un solo lugar, sin truncar). */
+  hint?: string
+  /** Canvas de resaltado a resolución nativa de `after`; se compone sobre el resultado. */
+  overlay?: HTMLCanvasElement | null
+  /** Rectángulo elegido, en píxeles de la imagen `after` (ya intersectado con la imagen). */
   onSelectRect?: (rect: { x: number; y: number; w: number; h: number }) => void
-  /** CLICK (sin arrastre) sobre un píxel OPACO del resultado — en modo selección Y en modo
-   *  normal. `x/y` en píxeles de la imagen `after` (para el modo OBJETO del sidecar),
-   *  `vx/vy` en px del viewport (para posicionar un popover) y `hex` el color clickeado. */
-  onPickPoint?: (point: { x: number; y: number; vx: number; vy: number; hex: string | null }) => void
+  /** Clic sin arrastre sobre un píxel OPACO — en modo normal Y en modo zona. */
+  onPickPoint?: (pick: CanvasPick) => void
 }) {
   const [scale, setScale] = useState(1)
   const [off, setOff] = useState({ x: 0, y: 0 })
   const [size, setSize] = useState({ w: 0, h: 0 })
   const [showBefore, setShowBefore] = useState(false)
   const [sel, setSel] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null)
+  const [spaceDown, setSpaceDown] = useState(false)
+  const [isPanning, setIsPanning] = useState(false)
   const [ver, setVer] = useState(0)
   const viewRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const beforeImg = useRef<HTMLImageElement | null>(null)
   const afterImg = useRef<HTMLImageElement | null>(null)
   const panning = useRef<{ x: number; y: number; ox: number; oy: number } | null>(null)
-  // Dónde empezó el pointerdown en modo normal: si el pointerup queda a <4px es un CLICK
-  // (selección de objeto), no un pan.
   const downPt = useRef<{ x: number; y: number } | null>(null)
-
-  /** Invierte el transform de dibujo (translate/scale/object-contain): px CSS del viewport →
-   *  píxeles de la imagen `after`. Devuelve null fuera de la imagen o sin resultado. */
-  const viewToImg = (cx: number, cy: number): { x: number; y: number } | null => {
-    const img = afterImg.current
-    if (!img || !img.naturalWidth) return null
-    const W = size.w
-    const H = size.h
-    const s = Math.min(W / img.naturalWidth, H / img.naturalHeight)
-    const dw = img.naturalWidth * s
-    const dh = img.naturalHeight * s
-    const x = ((cx - W / 2 - off.x) / scale + dw / 2) / s
-    const y = ((cy - H / 2 - off.y) / scale + dh / 2) / s
-    if (x < 0 || y < 0 || x >= img.naturalWidth || y >= img.naturalHeight) return null
-    return { x, y }
-  }
-
-  /** Color del píxel clickeado en el resultado (o null si es transparente). */
-  const sampleHex = (px: number, py: number): string | null => {
-    const img = afterImg.current
-    if (!img) return null
-    const c = document.createElement('canvas')
-    c.width = 1
-    c.height = 1
-    const g = c.getContext('2d', { willReadFrequently: true })
-    if (!g) return null
-    g.drawImage(img, -Math.floor(px), -Math.floor(py))
-    const d = g.getImageData(0, 0, 1, 1).data
-    if (d[3] < 128) return null
-    return '#' + [d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, '0')).join('')
-  }
+  const hovering = useRef(false)
+  // Los handlers nativos (wheel) y de teclado leen SIEMPRE el último estado vía refs.
+  const scaleRef = useRef(scale)
+  const offRef = useRef(off)
+  scaleRef.current = scale
+  offRef.current = off
 
   useEffect(() => {
     if (!before) {
@@ -133,7 +137,7 @@ export function CompareView({
     return () => ro.disconnect()
   }, [])
 
-  // Un solo drawImage de la imagen activa (resultado, o el original si se mantiene).
+  // Un solo drawImage de la imagen activa + el overlay de selección con el mismo transform.
   useEffect(() => {
     const canvas = canvasRef.current
     const W = size.w
@@ -156,15 +160,136 @@ export function CompareView({
     ctx.translate(W / 2 + off.x, H / 2 + off.y)
     ctx.scale(scale, scale)
     ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh)
-  }, [scale, off, ver, after, size, showBefore])
+    if (overlay && !showBefore && img === afterImg.current) {
+      ctx.drawImage(overlay, -dw / 2, -dh / 2, dw, dh)
+    }
+  }, [scale, off, ver, after, size, showBefore, overlay])
 
-  // Invierte el transform de dibujo (translate/scale/object-contain) para pasar del canvas
-  // (px CSS) a píxeles de la imagen `after`. Respeta el zoom/pan actual.
-  const finishSelection = (): void => {
+  /** px CSS del viewport → píxeles de la imagen `after` (null fuera de la imagen). */
+  const viewToImg = (cx: number, cy: number): { x: number; y: number } | null => {
+    const img = afterImg.current
+    if (!img || !img.naturalWidth) return null
+    const W = size.w
+    const H = size.h
+    const s = Math.min(W / img.naturalWidth, H / img.naturalHeight)
+    const dw = img.naturalWidth * s
+    const dh = img.naturalHeight * s
+    const x = ((cx - W / 2 - off.x) / scale + dw / 2) / s
+    const y = ((cy - H / 2 - off.y) / scale + dh / 2) / s
+    if (x < 0 || y < 0 || x >= img.naturalWidth || y >= img.naturalHeight) return null
+    return { x, y }
+  }
+
+  /** Color del píxel clickeado en el resultado (o null si es transparente). */
+  const sampleHex = (px: number, py: number): string | null => {
+    const img = afterImg.current
+    if (!img) return null
+    const c = document.createElement('canvas')
+    c.width = 1
+    c.height = 1
+    const g = c.getContext('2d', { willReadFrequently: true })
+    if (!g) return null
+    g.drawImage(img, -Math.floor(px), -Math.floor(py))
+    const d = g.getImageData(0, 0, 1, 1).data
+    if (d[3] < 128) return null
+    return '#' + [d[0], d[1], d[2]].map((v) => v.toString(16).padStart(2, '0')).join('')
+  }
+
+  const reset = (): void => {
+    setScale(1)
+    setOff({ x: 0, y: 0 })
+  }
+
+  /** Zoom anclado a un punto del viewport: lo que está bajo el cursor queda bajo el cursor. */
+  const zoomAt = (cx: number, cy: number, factor: number): void => {
+    const s0 = scaleRef.current
+    const s1 = clamp(s0 * factor)
+    if (s1 === s0) return
+    if (s1 === 1) {
+      reset()
+      return
+    }
+    const k = s1 / s0
+    const o = offRef.current
+    const W = size.w
+    const H = size.h
+    setOff({
+      x: cx - W / 2 - k * (cx - W / 2 - o.x),
+      y: cy - H / 2 - k * (cy - H / 2 - o.y)
+    })
+    setScale(s1)
+  }
+
+  /** Zoom desde los botones − / + (ancla al centro). */
+  const zoom = (factor: number): void => zoomAt(size.w / 2, size.h / 2, factor)
+
+  // Rueda/trackpad nativo (passive:false para poder frenar el scroll/zoom de la página):
+  // pinch (ctrlKey) o ⌘+scroll = zoom al cursor · scroll solo = desplazar.
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    const onWheel = (e: WheelEvent): void => {
+      e.preventDefault()
+      const r = view.getBoundingClientRect()
+      if (e.ctrlKey || e.metaKey) {
+        const factor = Math.exp(-e.deltaY * (e.ctrlKey ? 0.012 : 0.0035))
+        zoomAt(e.clientX - r.left, e.clientY - r.top, factor)
+      } else if (scaleRef.current > 1) {
+        setOff((o) => ({ x: o.x - e.deltaX, y: o.y - e.deltaY }))
+      }
+    }
+    view.addEventListener('wheel', onWheel, { passive: false })
+    return () => view.removeEventListener('wheel', onWheel)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [size.w, size.h])
+
+  // Espacio = mano (solo con el puntero sobre el lienzo, nunca al tipear) · Escape = cancelar rect.
+  useEffect(() => {
+    const typing = (t: EventTarget | null): boolean =>
+      t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)
+    const down = (e: KeyboardEvent): void => {
+      if (e.code === 'Space' && !e.repeat && hovering.current && !typing(e.target)) {
+        e.preventDefault()
+        setSpaceDown(true)
+      }
+      if (e.key === 'Escape') setSel(null)
+    }
+    const up = (e: KeyboardEvent): void => {
+      if (e.code === 'Space') setSpaceDown(false)
+    }
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+    }
+  }, [])
+
+  const startPan = (e: React.PointerEvent<HTMLDivElement>): void => {
+    panning.current = { x: e.clientX, y: e.clientY, ox: off.x, oy: off.y }
+    setIsPanning(true)
+    e.currentTarget.setPointerCapture(e.pointerId)
+  }
+
+  const endPan = (): void => {
+    panning.current = null
+    setIsPanning(false)
+  }
+
+  /** Cierra el rectángulo: clic (por distancia EN PANTALLA) o rect intersectado con la imagen. */
+  const finishSelection = (e: React.PointerEvent<HTMLDivElement>): void => {
     const img = afterImg.current
     const cur = sel
     setSel(null)
-    if (!img || !cur || (!onSelectRect && !onPickPoint)) return
+    if (!img || !cur || busy) return
+    const dx = cur.x1 - cur.x0
+    const dy = cur.y1 - cur.y0
+    if (dx * dx + dy * dy < 16) {
+      // CLIC: mismo camino que el modo normal (seleccionar objeto).
+      firePick(cur.x0, cur.y0, e.shiftKey)
+      return
+    }
+    if (!onSelectRect) return
     const W = size.w
     const H = size.h
     const s = Math.min(W / img.naturalWidth, H / img.naturalHeight)
@@ -176,57 +301,82 @@ export function CompareView({
     })
     const a = toImg(cur.x0, cur.y0)
     const b = toImg(cur.x1, cur.y1)
+    // Intersección real con la imagen: un rect totalmente afuera se DESCARTA (nunca se
+    // convierte en un punto clampeado que edite un objeto del borde por accidente).
     const x = Math.max(0, Math.min(a.x, b.x))
     const y = Math.max(0, Math.min(a.y, b.y))
     const w = Math.min(img.naturalWidth, Math.max(a.x, b.x)) - x
     const h = Math.min(img.naturalHeight, Math.max(a.y, b.y)) - y
-    if (w > 3 && h > 3) {
-      onSelectRect?.({ x, y, w, h })
-    } else if (onPickPoint) {
-      // CLICK (sin arrastre) = seleccionar OBJETO: el punto en px de la imagen.
-      const px = Math.max(0, Math.min(img.naturalWidth - 1, a.x))
-      const py = Math.max(0, Math.min(img.naturalHeight - 1, a.y))
-      onPickPoint({ x: px, y: py, vx: cur.x0, vy: cur.y0, hex: sampleHex(px, py) })
-    }
+    if (w <= 0 || h <= 0) return
+    // Cualquier franja vale (una marquesina de 200×2 px es un caso REAL: líneas de borde).
+    onSelectRect({ x, y, w: Math.max(1, w), h: Math.max(1, h) })
   }
 
-  const reset = (): void => {
-    setScale(1)
-    setOff({ x: 0, y: 0 })
+  /** Dispara el pick (clic sin arrastre) si cae sobre un píxel opaco del resultado. */
+  const firePick = (vx: number, vy: number, additive: boolean): void => {
+    if (!onPickPoint || busy) return
+    const p = viewToImg(vx, vy)
+    if (!p) return
+    const hex = sampleHex(p.x, p.y)
+    onPickPoint({ x: p.x, y: p.y, vx, vy, hex, additive })
   }
-  const zoom = (factor: number): void =>
-    setScale((s) => {
-      const n = clamp(s * factor)
-      if (n === 1) setOff({ x: 0, y: 0 })
-      return n
-    })
+
+  const cursor = spaceDown || isPanning
+    ? isPanning
+      ? 'cursor-grabbing'
+      : 'cursor-grab'
+    : selecting
+      ? busy
+        ? 'cursor-progress'
+        : 'cursor-crosshair select-none'
+      : scale > 1
+        ? 'cursor-grab'
+        : ''
 
   return (
     <div
       ref={viewRef}
-      className={`relative h-full w-full overflow-hidden rounded-2xl border border-border ${
-        selecting ? 'cursor-crosshair select-none' : ''
-      }`}
+      className={`relative h-full w-full overflow-hidden rounded-2xl border border-border ${cursor}`}
       style={{ background }}
-      onWheel={(e) => zoom(e.deltaY < 0 ? 1.15 : 0.87)}
+      onPointerEnter={() => {
+        hovering.current = true
+      }}
+      onPointerLeave={() => {
+        hovering.current = false
+        downPt.current = null
+        if (!selecting) endPan()
+      }}
+      onDoubleClick={(e) => {
+        // Doble clic AJUSTA a la ventana — pero solo sobre vacío: doble clic sobre un objeto
+        // no te roba el zoom (el clic simple ya lo seleccionó).
+        const r = viewRef.current?.getBoundingClientRect()
+        if (!r) return
+        const p = viewToImg(e.clientX - r.left, e.clientY - r.top)
+        if (!p || !sampleHex(p.x, p.y)) reset()
+      }}
       onPointerMove={(e) => {
-        if (selecting) {
-          if (!sel) return
-          const r = viewRef.current?.getBoundingClientRect()
-          if (!r) return
-          const cx = e.clientX - r.left
-          const cy = e.clientY - r.top
-          setSel((s) => (s ? { ...s, x1: cx, y1: cy } : s))
+        if (panning.current) {
+          setOff({
+            x: panning.current.ox + (e.clientX - panning.current.x),
+            y: panning.current.oy + (e.clientY - panning.current.y)
+          })
           return
         }
-        if (!panning.current) return
-        setOff({
-          x: panning.current.ox + (e.clientX - panning.current.x),
-          y: panning.current.oy + (e.clientY - panning.current.y)
-        })
+        if (selecting && sel) {
+          const r = viewRef.current?.getBoundingClientRect()
+          if (!r) return
+          setSel((s) => (s ? { ...s, x1: e.clientX - r.left, y1: e.clientY - r.top } : s))
+        }
       }}
       onPointerDown={(e) => {
+        // Espacio o botón del medio = mano, en CUALQUIER modo (también dentro de Editar zona).
+        if (spaceDown || e.button === 1) {
+          startPan(e)
+          return
+        }
+        if (e.button !== 0) return
         if (selecting) {
+          if (busy) return
           const r = viewRef.current?.getBoundingClientRect()
           if (!r) return
           const cx = e.clientX - r.left
@@ -237,41 +387,38 @@ export function CompareView({
         }
         downPt.current = { x: e.clientX, y: e.clientY }
         if (scale === 1) return
-        panning.current = { x: e.clientX, y: e.clientY, ox: off.x, oy: off.y }
-        e.currentTarget.setPointerCapture(e.pointerId)
+        startPan(e)
       }}
       onPointerUp={(e) => {
-        if (selecting) {
-          finishSelection()
+        if (panning.current) {
+          const wasClick =
+            downPt.current &&
+            (e.clientX - downPt.current.x) ** 2 + (e.clientY - downPt.current.y) ** 2 < 16
+          endPan()
+          if (wasClick && !spaceDown && e.target === canvasRef.current) {
+            const r = viewRef.current?.getBoundingClientRect()
+            if (r) firePick(e.clientX - r.left, e.clientY - r.top, e.shiftKey)
+          }
+          downPt.current = null
           return
         }
-        panning.current = null
+        if (selecting && sel) {
+          finishSelection(e)
+          return
+        }
         const d = downPt.current
         downPt.current = null
-        if (!d || !onPickPoint) return
-        // CLICK simple en modo NORMAL (sin arrastre, sobre el canvas y no sobre un botón):
-        // seleccionar el OBJETO bajo el cursor — el flujo natural estilo Illustrator.
-        if ((e.clientX - d.x) ** 2 + (e.clientY - d.y) ** 2 > 16) return // fue un pan
+        if (!d) return
+        if ((e.clientX - d.x) ** 2 + (e.clientY - d.y) ** 2 > 16) return
         if (e.target !== canvasRef.current) return
         const r = viewRef.current?.getBoundingClientRect()
         if (!r) return
-        const vx = e.clientX - r.left
-        const vy = e.clientY - r.top
-        const p = viewToImg(vx, vy)
-        if (!p) return
-        const hex = sampleHex(p.x, p.y)
-        if (!hex) return // píxel transparente: nada que editar
-        onPickPoint({ x: p.x, y: p.y, vx, vy, hex })
-      }}
-      onPointerLeave={() => {
-        downPt.current = null
-        if (selecting) return
-        panning.current = null
+        firePick(e.clientX - r.left, e.clientY - r.top, e.shiftKey)
       }}
     >
       <canvas ref={canvasRef} className="absolute inset-0 h-full w-full" />
 
-      {/* Rectángulo de selección (modo "limpiar zona") */}
+      {/* Rectángulo de selección (modo "Editar zona") */}
       {selecting && sel && (
         <div
           className="pointer-events-none absolute z-30 border-2 border-sky-400 bg-sky-400/20"
@@ -311,20 +458,28 @@ export function CompareView({
         </button>
       )}
 
-      {/* Zoom */}
-      {after && (
-        <div className="absolute bottom-2 right-2 z-20 flex items-center gap-0.5 rounded-lg border border-border bg-background/80 p-0.5 backdrop-blur">
-          <button type="button" aria-label="Alejar" onClick={() => zoom(0.8)} className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted">
-            <Minus className="h-4 w-4" />
+      {/* Barra de estado: zoom + LA línea de ayuda contextual (un solo lugar, sin truncar). */}
+      <div className="absolute inset-x-0 bottom-0 z-20 flex items-center justify-between gap-3 border-t border-border bg-background/85 px-2 py-1 backdrop-blur">
+        <div className="flex shrink-0 items-center gap-0.5">
+          <button type="button" aria-label="Alejar" onClick={() => zoom(0.8)} className="flex h-6 w-6 items-center justify-center rounded-md hover:bg-muted">
+            <Minus className="h-3.5 w-3.5" />
           </button>
-          <button type="button" onClick={reset} className="w-12 text-center text-xs tabular-nums text-muted-foreground hover:text-foreground">
+          <button
+            type="button"
+            title="Ajustar a la ventana (o doble clic en el lienzo)"
+            onClick={reset}
+            className="w-12 text-center text-xs tabular-nums text-muted-foreground hover:text-foreground"
+          >
             {Math.round(scale * 100)}%
           </button>
-          <button type="button" aria-label="Acercar" onClick={() => zoom(1.25)} className="flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted">
-            <Plus className="h-4 w-4" />
+          <button type="button" aria-label="Acercar" onClick={() => zoom(1.25)} className="flex h-6 w-6 items-center justify-center rounded-md hover:bg-muted">
+            <Plus className="h-3.5 w-3.5" />
           </button>
         </div>
-      )}
+        <p className="min-w-0 truncate text-right text-[11px] text-muted-foreground">
+          {hint ?? 'scroll = mover · pinch o ⌘ scroll = zoom · espacio = mano · doble clic = ajustar'}
+        </p>
+      </div>
     </div>
   )
 }

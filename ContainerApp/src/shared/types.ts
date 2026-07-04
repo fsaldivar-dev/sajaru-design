@@ -101,6 +101,16 @@ export interface VectorizeConfig {
 /** Modo de la herramienta de ZONA del vectorizado (rect sobre el raster del resultado). */
 export type VectorAreaMode = 'fill' | 'erase' | 'recolor'
 
+/** Grupo con nombre del diseñador ("Letras", "Gorro"…): objetos identificados por sus
+ *  semillas en coords NORMALIZADAS (0..1) — sobreviven re-trazados y cambios de tamaño. */
+export interface VectorGroup {
+  id: string
+  name: string
+  /** Último color aplicado al grupo (swatch del panel). */
+  color?: string
+  seeds: Array<{ px: number; py: number }>
+}
+
 /** Config que la mini app Mejorar manda al comando `enhance` del sidecar. */
 export interface UpscaleConfig {
   /** Factor de upscale (1..4). */
@@ -369,15 +379,24 @@ export interface SajaruApi {
       to?: string
     ) => Promise<BgProcessResult>
     /**
-     * Modo OBJETO (estilo Illustrator): el click selecciona el COMPONENTE CONECTADO del
+     * Modo OBJETO (estilo Illustrator): cada punto selecciona el COMPONENTE CONECTADO del
      * color clickeado (la isla) y lo borra o recolorea — sin tocar otros objetos del mismo
-     * color. Persiste y se re-aplica al re-vectorizar, igual que las zonas.
+     * color. Acepta N puntos (la selección o un grupo entero) y consolida al vector UNA
+     * sola vez. Persiste y se re-aplica al re-vectorizar, igual que las zonas.
      */
     objectEdit: (
-      point: { x: number; y: number },
+      points: Array<{ x: number; y: number }>,
       mode: 'erase' | 'recolor',
       to?: string
     ) => Promise<BgProcessResult>
+    /** Deshace LA ÚLTIMA acción de zona/objeto (`count` entradas = un paso, p.ej. un grupo). */
+    undoLastFill: (count?: number) => Promise<BgProcessResult & { remaining?: number }>
+    /** Rehace la última edición deshecha. */
+    redoLastFill: () => Promise<BgProcessResult & { remaining?: number }>
+    /** Grupos con nombre del diseñador (semillas normalizadas 0..1). Viven en el main para
+     *  sobrevivir cambios de mini app; se limpian al cargar otra imagen. */
+    groupsGet: () => Promise<VectorGroup[]>
+    groupsSet: (groups: VectorGroup[]) => Promise<{ ok: boolean }>
     /** Borra todas las limpiezas de zona guardadas. */
     clearAreaFills: () => Promise<{ ok: boolean }>
     saveSvg: (suggestedName: string) => Promise<{ saved: boolean; path?: string }>

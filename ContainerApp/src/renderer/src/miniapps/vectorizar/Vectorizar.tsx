@@ -1,11 +1,24 @@
-import { useEffect, useRef, useState } from 'react'
-import { Download, Eraser, Eye, EyeOff, Redo2, ScanEye, Undo2, Upload, X } from 'lucide-react'
-import type { PaletteEdit, RgbColor, VectorAreaMode, VectorizeConfig } from '@shared/types'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  ChevronDown,
+  Download,
+  Eraser,
+  Eye,
+  EyeOff,
+  Redo2,
+  ScanEye,
+  Trash2,
+  Undo2,
+  Upload,
+  X
+} from 'lucide-react'
+import type { PaletteEdit, RgbColor, VectorAreaMode, VectorGroup, VectorizeConfig } from '@shared/types'
 import { cn } from '@renderer/lib/cn'
-import { CompareView } from '@renderer/components/CompareView'
+import { CompareView, type CanvasPick } from '@renderer/components/CompareView'
 import { useRevokeOnUnmount } from '@renderer/lib/useRevokeOnUnmount'
 import { useShell } from '@renderer/lib/shell'
 import { OP_COST, recordUsage } from '@renderer/lib/premium'
+import { buildOverlay, floodComponent, hitComponent, loadRaster, type Component, type Raster } from './flood'
 
 import { CHECKER, IMAGE_ACCEPT as ACCEPT } from '@renderer/lib/image'
 
@@ -24,49 +37,66 @@ interface SourceImage {
   file: File
 }
 
+/** Paso del historial ÚNICO: una edición de paleta/capas, o una acción raster de `n`
+ *  entradas (un rect = 1; recolorear un grupo de 8 objetos = 8, se deshace como UN paso). */
+type UAction = { kind: 'palette' } | { kind: 'fill'; n: number }
+
 /**
- * Mini app "Vectorizar": traza un logo/imagen a vector (Potrace + separación
- * de capas de color del sidecar) y permite exportarlo como SVG (vector real) o PNG en
- * alta resolución. Reactiva: re-vectoriza al cambiar los settings.
+ * Mini app "Vectorizar": traza un logo/imagen a vector (Potrace + separación de capas de
+ * color del sidecar) y permite exportarlo como SVG/PDF/EPS o PNG en alta resolución.
+ * Reactiva: re-vectoriza al cambiar los controles.
+ *
+ * Gramática de edición (estilo Illustrator): CLIC selecciona un objeto y LO RESALTA,
+ * shift+clic suma, Escape deselecciona; las acciones (recolorear/borrar/guardar como
+ * grupo) operan sobre la selección visible desde la barra contextual. Las capas del panel
+ * cambian TODOS los objetos de un color; los grupos con nombre agrupan objetos sueltos.
  */
 export default function Vectorizar(): React.JSX.Element {
   const [config, setConfig] = useState<VectorizeConfig>(DEFAULT_CONFIG)
   const [palette, setPalette] = useState<RgbColor[]>([])
-  // Historial de ediciones de paleta (para deshacer/rehacer). cur = posición actual.
+  // Historial de ediciones de paleta (sub-pila del historial único). cur = posición actual.
   const [hist, setHist] = useState<{ stack: Array<PaletteEdit[] | undefined>; cur: number }>({
     stack: [undefined],
     cur: 0
   })
   const coalesceRef = useRef<string | null>(null)
+  // Historial ÚNICO (⌘Z): intercala pasos de paleta y de ediciones raster en orden real.
+  const [uhist, setUhist] = useState<{ undo: UAction[]; redo: UAction[] }>({ undo: [], redo: [] })
   const [source, setSource] = useState<SourceImage | null>(null)
   const [result, setResult] = useState<{ url: string } | null>(null)
   const [progress, setProgress] = useState<{ value: number; message?: string } | null>(null)
   const [error, setError] = useState<{ code: string; message: string } | null>(null)
   const [copied, setCopied] = useState(false)
   const [over, setOver] = useState(false)
-  // Herramienta de ZONA: modo selección de rectángulo + contador de ediciones (para "Deshacer").
-  // areaMode: qué hace el rect — fundir al predominante, borrar (→ transparente) o recolorear.
+  const [exportOpen, setExportOpen] = useState(false)
+  // Herramienta de ZONA (rect): modo + contador de ediciones raster vigentes.
   const [selecting, setSelecting] = useState(false)
   const [zones, setZones] = useState(0)
   const [areaMode, setAreaMode] = useState<VectorAreaMode>('fill')
   const [areaColor, setAreaColor] = useState('#8b5a2b')
-  // Popover de OBJETO: clic simple sobre el vector (modo normal) → recolorear/borrar SOLO ese
-  // objeto (componente conectado), no todo el color. x/y en px de la imagen; vx/vy en px del
-  // viewport (posición del popover); hex = color clickeado.
-  const [objPick, setObjPick] = useState<{
-    x: number
-    y: number
-    vx: number
-    vy: number
-    hex: string | null
-  } | null>(null)
+  // SELECCIÓN de objetos (componentes conectados) — se calcula client-side (flood.ts) y se
+  // RESALTA en el lienzo. Las acciones de la barra contextual operan sobre ella.
+  const [selComps, setSelComps] = useState<Component[]>([])
+  const [actionColor, setActionColor] = useState('#c53916')
+  // Grupos con nombre ("Letras", "Gorro"…). Persisten en el main (sobreviven cambiar de
+  // mini app y re-trazados; se limpian al cargar otra imagen).
+  const [groups, setGroups] = useState<VectorGroup[]>([])
+  const [groupHover, setGroupHover] = useState<string | null>(null)
+  const [hoverComps, setHoverComps] = useState<Component[]>([])
+  const [layerNote, setLayerNote] = useState<string | null>(null)
 
   const tokenRef = useRef(0)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const resultUrlRef = useRef<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const rasterRef = useRef<Raster | null>(null)
+  const hoverCacheRef = useRef<Map<string, Component[]>>(new Map())
+  const layerNoteTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const hasImage = Boolean(source)
   const busy = progress !== null
+  // La edición raster (objetos/zonas) consolida re-trazando LOCAL: con IA Premium el SVG
+  // pago no se pisa — esas herramientas quedan deshabilitadas con aviso (WYSIWYG honesto).
+  const canEditRaster = config.method === 'local'
   const { consumeTransfer, openApp } = useShell()
   useRevokeOnUnmount(source?.url, result?.url)
 
@@ -76,14 +106,70 @@ export default function Vectorizar(): React.JSX.Element {
     })
   }, [])
 
-  // El popover de objeto queda obsoleto si arranca un proceso, cambia el resultado (sus
-  // coordenadas ya no corresponden) o se entra/sale del modo zona.
+  // Raster del resultado para el flood de selección. Al cambiar el resultado, la selección
+  // y el caché de resaltado de grupos quedan obsoletos.
   useEffect(() => {
-    if (busy) setObjPick(null)
-  }, [busy])
+    rasterRef.current = null
+    hoverCacheRef.current.clear()
+    setSelComps([])
+    setHoverComps([])
+    if (!result?.url) return
+    let dead = false
+    void loadRaster(result.url).then(
+      (r) => {
+        if (!dead) rasterRef.current = r
+      },
+      () => undefined
+    )
+    return () => {
+      dead = true
+    }
+  }, [result?.url])
+
+  // Cambiar a IA Premium apaga las herramientas raster (ver `canEditRaster`).
   useEffect(() => {
-    setObjPick(null)
-  }, [result, selecting])
+    if (!canEditRaster) {
+      setSelecting(false)
+      setSelComps([])
+    }
+  }, [canEditRaster])
+
+  // Grupos guardados en el main (si volvés a la mini app, siguen).
+  useEffect(() => {
+    void window.api.vectorize.groupsGet().then(setGroups, () => undefined)
+  }, [])
+
+  // Resaltado de grupo al pasar el mouse por su fila (flood cacheado por grupo/resultado).
+  useEffect(() => {
+    if (!groupHover) {
+      setHoverComps([])
+      return
+    }
+    const raster = rasterRef.current
+    const g = groups.find((x) => x.id === groupHover)
+    if (!raster || !g) {
+      setHoverComps([])
+      return
+    }
+    const cached = hoverCacheRef.current.get(g.id)
+    if (cached) {
+      setHoverComps(cached)
+      return
+    }
+    const comps = g.seeds
+      .map((s) => floodComponent(raster, s.px * raster.w, s.py * raster.h))
+      .filter((c): c is Component => c !== null)
+    hoverCacheRef.current.set(g.id, comps)
+    setHoverComps(comps)
+  }, [groupHover, groups])
+
+  // Overlay de resaltado: selección + grupo hovereado, compuesto por CompareView.
+  const overlay = useMemo(() => {
+    const raster = rasterRef.current
+    const comps = [...selComps, ...hoverComps]
+    if (!raster || !comps.length) return null
+    return buildOverlay(raster.w, raster.h, comps)
+  }, [selComps, hoverComps])
 
   // Handoff: si otra mini app nos mandó una imagen ("Enviar a → Vectorizar"), la
   // pre-cargamos al montar. consumeTransfer() es consume-once: no recarga en re-renders.
@@ -136,7 +222,9 @@ export default function Vectorizar(): React.JSX.Element {
     setPalette([])
     setZones(0)
     setSelecting(false)
-    resetHistory()
+    setSelComps([])
+    setGroups([])
+    resetHistory(false)
     const fresh = { ...config, edit: undefined }
     setConfig(fresh)
     await window.api.vectorize.setImage(ab, file.name)
@@ -144,10 +232,8 @@ export default function Vectorizar(): React.JSX.Element {
   }
 
   // Re-vectoriza (debounced) con una config dada. ÚNICO disparador del re-trazado: la
-  // llaman set() (settings) y applyEdit (paleta/capas). Un solo camino con debounce
-  // compartido → nunca dos runs pisándose. (El viejo efecto [config] duplicaba el disparo
-  // junto a applyEdit → carrera de tokens que descartaba el setResult y dejaba el preview
-  // sin actualizar al aislar/ocultar/recolorear.)
+  // llaman set() (controles) y applyEdit (paleta/capas). Un solo camino con debounce
+  // compartido → nunca dos runs pisándose.
   function scheduleRun(cfg: VectorizeConfig): void {
     if (!source) return
     clearTimeout(debounceRef.current)
@@ -157,31 +243,53 @@ export default function Vectorizar(): React.JSX.Element {
   // Limpia el debounce pendiente al desmontar.
   useEffect(() => () => clearTimeout(debounceRef.current), [])
 
-  // Atajos: ⌘Z deshacer · ⌘⇧Z rehacer (edición de paleta).
+  // Atajos globales: ⌘Z deshacer · ⌘⇧Z rehacer (historial ÚNICO: paleta + ediciones) ·
+  // Escape deselecciona / cierra menús / sale de Editar zona · Supr borra la selección.
   useEffect(() => {
+    const typing = (t: EventTarget | null): boolean =>
+      t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)
     const onKey = (e: KeyboardEvent): void => {
       if (!source) return
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault()
-        if (e.shiftKey) redo()
-        else undo()
+        if (e.shiftKey) void redoUnified()
+        else void undoUnified()
+        return
+      }
+      if (e.key === 'Escape') {
+        setExportOpen(false)
+        if (selComps.length) setSelComps([])
+        else if (selecting) setSelecting(false)
+        return
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selComps.length && !busy && !typing(e.target)) {
+        e.preventDefault()
+        void applySelection('erase')
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hist, source])
+  }, [hist, uhist, source, selComps, selecting, busy, actionColor])
 
   function handleFiles(files: FileList | null): void {
     const f = files?.[0]
     if (f && ACCEPT.includes(f.type)) void onFile(f)
   }
 
-  // Cambiar colores/tamaño/método RE-DETECTA la paleta (descarta ediciones e historial).
+  // Cambiar colores/ruido/motor RE-DETECTA la paleta (descarta ediciones de capas). El
+  // TAMAÑO del PNG no toca la paleta: conserva ediciones e historial (era exasperante que
+  // cambiar 2048→4096 borrara los recoloreos sin aviso).
   function set<K extends keyof VectorizeConfig>(key: K, value: VectorizeConfig[K]): void {
+    if (key === 'size') {
+      const next = { ...config, [key]: value }
+      setConfig(next)
+      scheduleRun(next)
+      return
+    }
     const next = { ...config, [key]: value, edit: undefined }
     setConfig(next)
-    resetHistory()
+    resetHistory(true)
     scheduleRun(next)
   }
 
@@ -191,27 +299,32 @@ export default function Vectorizar(): React.JSX.Element {
     scheduleRun(next)
   }
 
-  function resetHistory(): void {
+  /** Resetea el historial de paleta. `keepFills` conserva los pasos de ediciones raster
+   *  (que SÍ sobreviven a un re-trazado — persisten en el main). */
+  function resetHistory(keepFills: boolean): void {
     setHist({ stack: [undefined], cur: 0 })
     coalesceRef.current = null
+    setUhist((h) => (keepFills ? { undo: h.undo.filter((a) => a.kind === 'fill'), redo: [] } : { undo: [], redo: [] }))
   }
 
-  /** Aplica una edición y la registra en el historial. `coalesce` fusiona con el paso previo
-   *  si la clave coincide (p.ej. arrastrar el selector del mismo color = un solo paso). */
+  /** Aplica una edición de paleta y la registra en AMBOS historiales. `coalesce` fusiona
+   *  con el paso previo si la clave coincide (arrastrar el selector = un solo paso). */
   function commitEdit(next: PaletteEdit[] | undefined, coalesce: string | null): void {
+    const merged = Boolean(coalesce && coalesce === coalesceRef.current)
     setHist((h) => {
-      if (coalesce && coalesce === coalesceRef.current) {
+      if (merged) {
         const stack = h.stack.slice(0, h.cur + 1)
         stack[h.cur] = next
         return { stack, cur: h.cur }
       }
       return { stack: [...h.stack.slice(0, h.cur + 1), next], cur: h.cur + 1 }
     })
+    if (!merged) setUhist((h) => ({ undo: [...h.undo, { kind: 'palette' }], redo: [] }))
     coalesceRef.current = coalesce
     applyEdit(next)
   }
 
-  function undo(): void {
+  function undoPalette(): void {
     if (hist.cur <= 0) return
     coalesceRef.current = null
     const i = hist.cur - 1
@@ -219,7 +332,7 @@ export default function Vectorizar(): React.JSX.Element {
     applyEdit(hist.stack[i])
   }
 
-  function redo(): void {
+  function redoPalette(): void {
     if (hist.cur >= hist.stack.length - 1) return
     coalesceRef.current = null
     const i = hist.cur + 1
@@ -227,8 +340,65 @@ export default function Vectorizar(): React.JSX.Element {
     applyEdit(hist.stack[i])
   }
 
-  const canUndo = hist.cur > 0
-  const canRedo = hist.cur < hist.stack.length - 1
+  /** ⌘Z: deshace LA última acción, sea de paleta o de ediciones raster (un solo historial). */
+  async function undoUnified(): Promise<void> {
+    if (busy) return
+    const top = uhist.undo[uhist.undo.length - 1]
+    if (!top) return
+    setUhist((h) => ({ undo: h.undo.slice(0, -1), redo: [...h.redo, top] }))
+    if (top.kind === 'palette') {
+      undoPalette()
+      return
+    }
+    const token = ++tokenRef.current
+    setError(null)
+    setProgress({ value: 0, message: 'Deshaciendo la última edición…' })
+    const r = await window.api.vectorize.undoLastFill(top.n)
+    if (token !== tokenRef.current) return
+    setProgress(null)
+    if (!r.ok) {
+      setError(r.error ?? { code: 'E_UNDO', message: 'No se pudo deshacer' })
+      return
+    }
+    applyFillResult(r)
+  }
+
+  /** ⌘⇧Z: rehace la última acción deshecha. */
+  async function redoUnified(): Promise<void> {
+    if (busy) return
+    const top = uhist.redo[uhist.redo.length - 1]
+    if (!top) return
+    setUhist((h) => ({ undo: [...h.undo, top], redo: h.redo.slice(0, -1) }))
+    if (top.kind === 'palette') {
+      redoPalette()
+      return
+    }
+    const token = ++tokenRef.current
+    setError(null)
+    setProgress({ value: 0, message: 'Rehaciendo la edición…' })
+    const r = await window.api.vectorize.redoLastFill()
+    if (token !== tokenRef.current) return
+    setProgress(null)
+    if (!r.ok) {
+      setError(r.error ?? { code: 'E_REDO', message: 'No se pudo rehacer' })
+      return
+    }
+    applyFillResult(r)
+  }
+
+  /** Toma el PNG devuelto por una operación raster y actualiza preview + contador. */
+  function applyFillResult(r: { bytes?: ArrayBuffer; remaining?: number }): void {
+    if (r.bytes) {
+      const url = URL.createObjectURL(new Blob([r.bytes], { type: 'image/png' }))
+      if (resultUrlRef.current) URL.revokeObjectURL(resultUrlRef.current)
+      resultUrlRef.current = url
+      setResult({ url })
+    }
+    if (typeof r.remaining === 'number') setZones(r.remaining)
+  }
+
+  const canUndoU = uhist.undo.length > 0
+  const canRedoU = uhist.redo.length > 0
 
   /** Reemplaza (to) o quita (remove) el color i, conservando las demás ediciones. */
   function editColor(i: number, change: { to?: RgbColor | null; remove?: boolean }): void {
@@ -270,7 +440,7 @@ export default function Vectorizar(): React.JSX.Element {
     commitEdit(next, null)
   }
 
-  /** Aislar (solo): muestra únicamente la capa i. Si ya está aislada, muestra todas. */
+  /** Aislar (ver sola): muestra únicamente la capa i. Si ya está aislada, muestra todas. */
   function isolateLayer(i: number): void {
     if (isIsolated(i)) {
       showAll()
@@ -289,13 +459,19 @@ export default function Vectorizar(): React.JSX.Element {
   /**
    * Exporta SOLO esta capa como su propio SVG (match por data-color en el main).
    * El sidecar emite `data-color` con el color YA recoloreado (`to`), así que matcheamos
-   * sobre el color vigente (`cur`), no el original de la paleta.
+   * sobre el color vigente (`cur`). Si la capa ya no existe en el vector (la borraste o
+   * consolidaste distinto), avisamos en vez de fallar en silencio.
    */
-  function exportLayer(i: number): void {
+  async function exportLayer(i: number): Promise<void> {
     const c = palette[i]
     if (!c) return
     const cur = config.edit?.[i]?.to ?? c
-    void window.api.vectorize.saveLayerSvg(rgbToHex(cur), `${baseName()}-capa-${i + 1}.svg`)
+    const r = await window.api.vectorize.saveLayerSvg(rgbToHex(cur), `${baseName()}-capa-${i + 1}.svg`)
+    if (!r.saved && !r.path) {
+      clearTimeout(layerNoteTimer.current)
+      setLayerNote('Esa capa ya no está en el vector actual (¿la ocultaste o recoloreaste?).')
+      layerNoteTimer.current = setTimeout(() => setLayerNote(null), 5000)
+    }
   }
 
   /** Exporta el vector completo a PDF (vectorial) o EPS (Ghostscript). Surface del error
@@ -331,14 +507,14 @@ export default function Vectorizar(): React.JSX.Element {
     openApp('playeras-mockup-3d', { bytes, name: `${baseName()}-vector.png` })
   }
 
-  /** Herramienta de ZONA: aplica el modo activo (fundir/borrar/recolorear) al rectángulo
+  /** Herramienta de ZONA: aplica el modo activo (emparejar/borrar/recolorear) al rectángulo
    *  elegido (raster). La edición queda guardada en el main y se re-aplica si re-vectorizás
-   *  (tocar capas/settings no la borra). */
+   *  (tocar capas/controles no la borra). */
   async function onSelectRect(rect: { x: number; y: number; w: number; h: number }): Promise<void> {
     const token = ++tokenRef.current
     setError(null)
     const msg =
-      areaMode === 'fill' ? 'Fundiendo zona…' : areaMode === 'erase' ? 'Borrando zona…' : 'Recoloreando zona…'
+      areaMode === 'fill' ? 'Emparejando la zona…' : areaMode === 'erase' ? 'Borrando la zona…' : 'Recoloreando la zona…'
     setProgress({ value: 0, message: msg })
     const r = await window.api.vectorize.areaFill(
       rect,
@@ -348,73 +524,177 @@ export default function Vectorizar(): React.JSX.Element {
     if (token !== tokenRef.current) return
     setProgress(null)
     if (!r.ok) {
-      setError(r.error ?? { code: 'E_AREA', message: 'Falló la limpieza de zona' })
+      setError(r.error ?? { code: 'E_AREA', message: 'No se pudo editar la zona' })
       return
     }
     if (r.bytes) {
-      const url = URL.createObjectURL(new Blob([r.bytes], { type: 'image/png' }))
-      if (resultUrlRef.current) URL.revokeObjectURL(resultUrlRef.current)
-      resultUrlRef.current = url
-      setResult({ url })
+      applyFillResult({ bytes: r.bytes })
       setZones((z) => z + 1)
+      setUhist((h) => ({ undo: [...h.undo, { kind: 'fill', n: 1 }], redo: [] }))
     }
   }
 
-  /** Modo OBJETO: borra/recolorea el COMPONENTE CONECTADO del color clickeado — sin tocar
-   *  otros objetos del mismo color (estilo varita de Illustrator). */
-  async function runObjectEdit(
-    point: { x: number; y: number },
+  /** Aplica borrar/recolorear a TODA la selección (N componentes conectados) en un solo
+   *  paso: N puntos al sidecar, UNA consolidación, UN paso del historial. */
+  async function applySelection(mode: 'erase' | 'recolor'): Promise<void> {
+    if (!selComps.length || busy) return
+    const points = selComps.map((c) => c.seed)
+    const to = mode === 'recolor' ? actionColor : undefined
+    setSelComps([])
+    await runObjectEditPoints(points, mode, to)
+  }
+
+  /** Núcleo del modo OBJETO: N componentes conectados → sidecar → consolidar → historial. */
+  async function runObjectEditPoints(
+    points: Array<{ x: number; y: number }>,
     mode: 'erase' | 'recolor',
     to?: string
-  ): Promise<void> {
-    setObjPick(null)
+  ): Promise<boolean> {
     const token = ++tokenRef.current
     setError(null)
-    setProgress({ value: 0, message: mode === 'erase' ? 'Borrando objeto…' : 'Recoloreando objeto…' })
-    const r = await window.api.vectorize.objectEdit(point, mode, mode === 'recolor' ? to : undefined)
-    if (token !== tokenRef.current) return
+    const what = points.length === 1 ? 'el objeto' : `${points.length} objetos`
+    setProgress({ value: 0, message: mode === 'erase' ? `Borrando ${what}…` : `Recoloreando ${what}…` })
+    const r = await window.api.vectorize.objectEdit(points, mode, to)
+    if (token !== tokenRef.current) return false
     setProgress(null)
     if (!r.ok) {
-      setError(r.error ?? { code: 'E_AREA', message: 'Falló la edición del objeto' })
-      return
+      setError(r.error ?? { code: 'E_AREA', message: 'No se pudo editar la selección' })
+      return false
     }
     if (r.bytes) {
-      const url = URL.createObjectURL(new Blob([r.bytes], { type: 'image/png' }))
-      if (resultUrlRef.current) URL.revokeObjectURL(resultUrlRef.current)
-      resultUrlRef.current = url
-      setResult({ url })
-      setZones((z) => z + 1)
+      applyFillResult({ bytes: r.bytes })
+      setZones((z) => z + points.length)
+      setUhist((h) => ({ undo: [...h.undo, { kind: 'fill', n: points.length }], redo: [] }))
     }
+    return true
   }
 
-  /** CLICK sobre el resultado. En modo normal abre el popover de OBJETO (elegís recolorear o
-   *  borrar ahí mismo); dentro de "Editar zona" aplica directo el modo activo. */
-  function onPickPoint(p: { x: number; y: number; vx: number; vy: number; hex: string | null }): void {
-    if (busy || !result) return
-    if (selecting) {
-      if (areaMode === 'fill') return // fundir necesita una zona; el click no aplica
-      void runObjectEdit(p, areaMode, areaMode === 'recolor' ? areaColor : undefined)
+  /** CLIC sobre el lienzo: SELECCIONA el objeto (y lo resalta). Shift+clic suma o quita;
+   *  clic en vacío deselecciona. Vale igual dentro de "Editar zona" — el clic nunca edita
+   *  nada por sí solo (las acciones viven en la barra contextual). */
+  function onPickPoint(p: CanvasPick): void {
+    if (busy || !result || !canEditRaster) return
+    const raster = rasterRef.current
+    if (!raster) return
+    if (!p.hex) {
+      if (!p.additive) setSelComps([])
       return
     }
-    setObjPick(p)
+    const idx = hitComponent(selComps, raster.w, p.x, p.y)
+    if (p.additive) {
+      if (idx >= 0) {
+        setSelComps((s) => s.filter((_, i) => i !== idx))
+        return
+      }
+      const comp = floodComponent(raster, p.x, p.y)
+      if (comp) setSelComps((s) => [...s, comp])
+      return
+    }
+    if (idx >= 0) return // ya estaba seleccionado: se mantiene
+    const comp = floodComponent(raster, p.x, p.y)
+    if (!comp) {
+      setSelComps([])
+      return
+    }
+    setSelComps([comp])
+    // El recolor arranca del color real del objeto (después lo cambiás en el selector).
+    setActionColor(comp.hex)
   }
 
-  /** Deshace TODAS las limpiezas de zona y re-vectoriza limpio. */
+  /** Guarda la selección actual como GRUPO con nombre (semillas normalizadas → main). */
+  function saveGroup(): void {
+    const raster = rasterRef.current
+    if (!raster || !selComps.length) return
+    const g: VectorGroup = {
+      id: `g${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`,
+      name: `Grupo ${groups.length + 1}`,
+      color: selComps[0].hex,
+      seeds: selComps.map((c) => ({ px: c.seed.x / raster.w, py: c.seed.y / raster.h }))
+    }
+    const next = [...groups, g]
+    setGroups(next)
+    void window.api.vectorize.groupsSet(next)
+    setSelComps([])
+  }
+
+  /** Recolorea TODO el grupo tocando su swatch (batch de N puntos, un paso del historial). */
+  async function recolorGroup(g: VectorGroup, hex: string): Promise<void> {
+    const raster = rasterRef.current
+    if (!raster || busy) return
+    const points = g.seeds.map((s) => ({ x: s.px * raster.w, y: s.py * raster.h }))
+    const ok = await runObjectEditPoints(points, 'recolor', hex)
+    if (!ok) return
+    const next = groups.map((x) => (x.id === g.id ? { ...x, color: hex } : x))
+    setGroups(next)
+    void window.api.vectorize.groupsSet(next)
+  }
+
+  function renameGroup(id: string, name: string): void {
+    setGroups((gs) => gs.map((g) => (g.id === id ? { ...g, name } : g)))
+  }
+
+  function persistGroups(): void {
+    void window.api.vectorize.groupsSet(groups)
+  }
+
+  function deleteGroup(id: string): void {
+    const next = groups.filter((g) => g.id !== id)
+    setGroups(next)
+    hoverCacheRef.current.delete(id)
+    if (groupHover === id) setGroupHover(null)
+    void window.api.vectorize.groupsSet(next)
+  }
+
+  /** Quita TODAS las ediciones raster y re-vectoriza limpio (los grupos quedan: son
+   *  selecciones guardadas, no ediciones). */
   function clearZones(): void {
     void window.api.vectorize.clearAreaFills()
     setZones(0)
-    setSelecting(false)
+    setUhist((h) => ({ undo: h.undo.filter((a) => a.kind !== 'fill'), redo: [] }))
     scheduleRun(config)
   }
 
+  // La línea de ayuda contextual (UN solo lugar: la barra de estado del lienzo).
+  const canvasHint = !result
+    ? 'Vectoriza solo al cargar la imagen'
+    : !canEditRaster
+      ? 'Motor Premium: editá las capas en el panel · la edición de objetos/zonas es del motor Local'
+      : selecting
+        ? areaMode === 'fill'
+          ? 'Arrastrá sobre la zona sucia: se empareja a su color dominante · espacio = mover'
+          : areaMode === 'erase'
+            ? 'Arrastrá la zona: borra su color dominante · clic = seleccionar objeto · espacio = mover'
+            : 'Arrastrá la zona: recolorea su color dominante · clic = seleccionar objeto · espacio = mover'
+        : selComps.length
+          ? 'shift+clic suma o quita · Supr borra la selección · Escape deselecciona'
+          : 'clic = seleccionar un objeto · scroll = mover · pinch o ⌘ scroll = zoom · espacio = mano'
+
   return (
     <div className="flex h-full flex-col">
-      {/* Barra de acción */}
+      {/* Barra de acción: archivo · deshacer/rehacer GLOBAL · Mockup 3D · Exportar */}
       <div className="flex shrink-0 items-center justify-between gap-3 border-b border-border px-6 py-3">
         <p className="truncate text-sm text-muted-foreground">
           {source ? source.name : 'Arrastrá una imagen para vectorizar'}
         </p>
         <div className="flex shrink-0 items-center gap-2">
+          <button
+            type="button"
+            title="Deshacer la última acción (⌘Z)"
+            disabled={!canUndoU || busy || !hasImage}
+            onClick={() => void undoUnified()}
+            className="flex h-9 w-9 items-center justify-center rounded-lg border border-border text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Undo2 className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            title="Rehacer (⌘⇧Z)"
+            disabled={!canRedoU || busy || !hasImage}
+            onClick={() => void redoUnified()}
+            className="mr-1 flex h-9 w-9 items-center justify-center rounded-lg border border-border text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <Redo2 className="h-4 w-4" />
+          </button>
           <button
             type="button"
             disabled={!result || busy}
@@ -424,49 +704,46 @@ export default function Vectorizar(): React.JSX.Element {
           >
             Mockup 3D
           </button>
-          <button
-            type="button"
-            disabled={!result || busy}
-            onClick={() => void onCopy()}
-            className="rounded-lg border border-border px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            {copied ? 'Copiado ✓' : 'Copiar PNG'}
-          </button>
-          <button
-            type="button"
-            disabled={!result || busy}
-            onClick={() => void (result && window.api.vectorize.savePng(`${baseName()}-vector.png`))}
-            className="rounded-lg border border-border px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Guardar PNG
-          </button>
-          <button
-            type="button"
-            disabled={!result || busy}
-            onClick={() => void (result && window.api.vectorize.saveSvg(`${baseName()}.svg`))}
-            title="Vector real, escalable a cualquier tamaño"
-            className="rounded-lg bg-foreground px-4 py-2 text-sm font-medium text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Guardar SVG
-          </button>
-          <button
-            type="button"
-            disabled={!result || busy}
-            onClick={() => void onSaveVector('pdf')}
-            title="PDF vectorial — imprenta / plotter"
-            className="rounded-lg border border-border px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            PDF
-          </button>
-          <button
-            type="button"
-            disabled={!result || busy}
-            onClick={() => void onSaveVector('eps')}
-            title="EPS vectorial — imprenta / plotter"
-            className="rounded-lg border border-border px-4 py-2 text-sm font-medium transition hover:bg-muted disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            EPS
-          </button>
+          <div className="relative">
+            <button
+              type="button"
+              disabled={!result || busy}
+              onClick={() => setExportOpen((o) => !o)}
+              className="flex items-center gap-1.5 rounded-lg bg-foreground px-4 py-2 text-sm font-medium text-background transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Exportar
+              <ChevronDown className="h-4 w-4" />
+            </button>
+            {exportOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setExportOpen(false)} />
+                <div className="absolute right-0 top-full z-50 mt-1 w-52 overflow-hidden rounded-xl border border-border bg-background py-1 shadow-xl">
+                  {(
+                    [
+                      { label: 'Guardar SVG', note: 'vector real', run: () => void window.api.vectorize.saveSvg(`${baseName()}.svg`) },
+                      { label: 'PDF', note: 'imprenta / plotter', run: () => void onSaveVector('pdf') },
+                      { label: 'EPS', note: 'imprenta / plotter', run: () => void onSaveVector('eps') },
+                      { label: 'Guardar PNG', note: `${config.size}px`, run: () => void window.api.vectorize.savePng(`${baseName()}-vector.png`) },
+                      { label: copied ? 'Copiado ✓' : 'Copiar PNG', note: 'al portapapeles', run: () => void onCopy() }
+                    ] as const
+                  ).map((item) => (
+                    <button
+                      key={item.label}
+                      type="button"
+                      onClick={() => {
+                        setExportOpen(false)
+                        item.run()
+                      }}
+                      className="flex w-full items-center justify-between px-3 py-2 text-left text-sm transition hover:bg-muted"
+                    >
+                      <span className="font-medium">{item.label}</span>
+                      <span className="text-xs text-muted-foreground">{item.note}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
 
@@ -484,14 +761,14 @@ export default function Vectorizar(): React.JSX.Element {
         </div>
       )}
 
-      {/* Error */}
+      {/* Error (se ve como error, no como hint) */}
       {error && !busy && (
-        <div className="shrink-0 border-b border-border bg-muted px-6 py-2 text-sm text-muted-foreground">
+        <div className="shrink-0 border-b border-red-500/30 bg-red-500/10 px-6 py-2 text-sm font-medium text-red-700 dark:text-red-300">
           {error.message}
         </div>
       )}
 
-      {/* Fila principal: original | resultado | config */}
+      {/* Fila principal: lienzo | panel */}
       <div className="flex min-h-0 flex-1">
         <div className="flex min-w-0 flex-1 p-6">
           {source ? (
@@ -509,30 +786,25 @@ export default function Vectorizar(): React.JSX.Element {
               }}
             >
               <div className="mb-2 flex shrink-0 items-center justify-between gap-2">
-                <h3 className="min-w-0 truncate text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  {selecting
-                    ? areaMode === 'fill'
-                      ? 'Arrastrá un rectángulo → se funde al color predominante'
-                      : areaMode === 'erase'
-                        ? 'CLIC en un objeto lo borra · arrastrá una zona → borra su color predominante'
-                        : 'CLIC en un objeto lo recolorea · arrastrá una zona → recolorea su predominante'
-                    : 'Vector · CLIC en un objeto = recolorear/borrar SOLO ese objeto · rueda = zoom'}
+                <h3 className="min-w-0 shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  Vector
                 </h3>
-                <div className="flex shrink-0 items-center gap-3">
-                  {selecting && (
+                <div className="flex min-w-0 shrink items-center gap-3">
+                  {selecting && canEditRaster && (
                     <div className="flex items-center gap-1">
                       {(
                         [
-                          { m: 'fill' as const, label: 'Fundir' },
-                          { m: 'erase' as const, label: 'Borrar' },
-                          { m: 'recolor' as const, label: 'Recolorear' }
+                          { m: 'fill' as const, label: 'Emparejar', tip: 'La zona se empareja a su color dominante (tapa suciedad)' },
+                          { m: 'erase' as const, label: 'Borrar', tip: 'Borra el color dominante de la zona (→ transparente)' },
+                          { m: 'recolor' as const, label: 'Recolorear', tip: 'Cambia el color dominante de la zona' }
                         ]
-                      ).map(({ m, label }) => (
+                      ).map(({ m, label, tip }) => (
                         <button
                           key={m}
                           type="button"
                           disabled={busy}
                           onClick={() => setAreaMode(m)}
+                          title={tip}
                           className={cn(
                             'rounded-md border px-2 py-0.5 text-[11px] font-medium transition disabled:opacity-40',
                             areaMode === m
@@ -559,27 +831,34 @@ export default function Vectorizar(): React.JSX.Element {
                       )}
                     </div>
                   )}
-                  <button
-                    type="button"
-                    disabled={!result || busy}
-                    onClick={() => setSelecting((s) => !s)}
-                    title="Editá zonas del resultado: fundir al color predominante, borrarlo (transparente) o recolorearlo"
-                    className={cn(
-                      'flex items-center gap-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40',
-                      selecting ? 'text-sky-500' : 'text-muted-foreground hover:text-foreground'
-                    )}
-                  >
-                    <Eraser className="h-3.5 w-3.5" />
-                    {selecting ? 'Listo' : 'Editar zona'}
-                  </button>
-                  {zones > 0 && (
+                  {canEditRaster ? (
+                    <button
+                      type="button"
+                      disabled={!result || busy}
+                      onClick={() => setSelecting((s) => !s)}
+                      title="Herramienta de zona: arrastrá un rectángulo para emparejar, borrar o recolorear su color dominante"
+                      className={cn(
+                        'flex items-center gap-1.5 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-40',
+                        selecting ? 'text-sky-500' : 'text-muted-foreground hover:text-foreground'
+                      )}
+                    >
+                      <Eraser className="h-3.5 w-3.5" />
+                      {selecting ? 'Listo' : 'Editar zona'}
+                    </button>
+                  ) : (
+                    <span className="text-[11px] text-muted-foreground">
+                      Objetos y zonas: motor Local
+                    </span>
+                  )}
+                  {zones > 0 && canEditRaster && (
                     <button
                       type="button"
                       disabled={busy}
                       onClick={clearZones}
+                      title="Quita TODAS las ediciones de objetos y zonas (⌘Z deshace de a una)"
                       className="text-xs font-medium text-muted-foreground hover:text-foreground disabled:opacity-40"
                     >
-                      Deshacer zonas ({zones})
+                      Quitar ediciones ({zones})
                     </button>
                   )}
                   <button
@@ -591,71 +870,86 @@ export default function Vectorizar(): React.JSX.Element {
                   </button>
                 </div>
               </div>
-              <div className="relative min-h-0 flex-1">
+
+              {/* Barra CONTEXTUAL de selección: aparece con objetos seleccionados; no tapa el arte. */}
+              {selComps.length > 0 && !busy && (
+                <div className="mb-2 flex shrink-0 flex-wrap items-center gap-2 rounded-xl border border-sky-400/50 bg-sky-400/10 px-3 py-1.5">
+                  <span className="flex items-center gap-1">
+                    {selComps.slice(0, 4).map((c, i) => (
+                      <span
+                        key={i}
+                        className="h-4 w-4 rounded border border-border"
+                        style={{ backgroundColor: c.hex }}
+                      />
+                    ))}
+                  </span>
+                  <span className="text-xs font-medium">
+                    {selComps.length === 1 ? '1 objeto' : `${selComps.length} objetos`}
+                  </span>
+                  <span className="mx-0.5 text-xs text-muted-foreground">→</span>
+                  <label
+                    className="relative h-6 w-8 shrink-0 cursor-pointer overflow-hidden rounded-md border border-border"
+                    title="Color nuevo"
+                  >
+                    <span className="absolute inset-0" style={{ backgroundColor: actionColor }} />
+                    <input
+                      type="color"
+                      value={actionColor}
+                      onChange={(e) => setActionColor(e.target.value)}
+                      className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => void applySelection('recolor')}
+                    className="rounded-md bg-foreground px-2.5 py-1 text-xs font-semibold text-background transition hover:opacity-90"
+                  >
+                    Recolorear
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void applySelection('erase')}
+                    title="También: tecla Supr"
+                    className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition hover:text-foreground"
+                  >
+                    Borrar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={saveGroup}
+                    title="Guardá esta selección con nombre (Letras, Gorro…) para recolorearla toda junta cuando quieras"
+                    className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition hover:text-foreground"
+                  >
+                    Guardar como grupo
+                  </button>
+                  <span className="ml-auto hidden text-[11px] text-muted-foreground lg:inline">
+                    shift+clic suma · Escape deselecciona
+                  </span>
+                  <button
+                    type="button"
+                    title="Deseleccionar (Escape)"
+                    onClick={() => setSelComps([])}
+                    className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
+
+              <div className="min-h-0 flex-1">
                 <CompareView
                   before={source.url}
                   after={result?.url ?? null}
                   beforeLabel="Original"
                   afterLabel="Vector"
                   background={CHECKER}
-                  selecting={selecting && !busy}
-                  onSelectRect={(rect) => void onSelectRect(rect)}
-                  onPickPoint={onPickPoint}
+                  selecting={selecting && canEditRaster}
+                  busy={busy}
+                  hint={canvasHint}
+                  overlay={overlay}
+                  onSelectRect={canEditRaster ? (rect) => void onSelectRect(rect) : undefined}
+                  onPickPoint={canEditRaster ? onPickPoint : undefined}
                 />
-                {/* Popover de OBJETO: aparece pegado al clic. Muestra el color detectado y
-                    edita SOLO ese componente conectado (no todo el color, como las capas). */}
-                {objPick && !busy && (
-                  <div
-                    className="absolute z-40 flex items-center gap-1.5 rounded-xl border border-border bg-background/95 p-1.5 shadow-xl backdrop-blur"
-                    style={{
-                      left: Math.max(150, objPick.vx),
-                      top: objPick.vy > 64 ? objPick.vy - 54 : objPick.vy + 14,
-                      transform: 'translateX(-50%)'
-                    }}
-                  >
-                    <span className="flex items-center gap-1.5 pl-1 text-[11px] font-medium text-muted-foreground">
-                      <span
-                        className="h-4 w-4 shrink-0 rounded border border-border"
-                        style={{ backgroundColor: objPick.hex ?? 'transparent' }}
-                      />
-                      Solo este objeto
-                    </span>
-                    <label
-                      className="relative ml-0.5 h-6 w-8 shrink-0 cursor-pointer overflow-hidden rounded-md border border-border"
-                      title="Color nuevo del objeto"
-                    >
-                      <span className="absolute inset-0" style={{ backgroundColor: areaColor }} />
-                      <input
-                        type="color"
-                        value={areaColor}
-                        onChange={(e) => setAreaColor(e.target.value)}
-                        className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
-                      />
-                    </label>
-                    <button
-                      type="button"
-                      onClick={() => void runObjectEdit(objPick, 'recolor', areaColor)}
-                      className="rounded-md bg-foreground px-2 py-1 text-[11px] font-semibold text-background transition hover:opacity-90"
-                    >
-                      Recolorear
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void runObjectEdit(objPick, 'erase')}
-                      className="rounded-md border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground transition hover:text-foreground"
-                    >
-                      Borrar
-                    </button>
-                    <button
-                      type="button"
-                      title="Cancelar"
-                      onClick={() => setObjPick(null)}
-                      className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground"
-                    >
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                )}
               </div>
               {over && (
                 <div className="pointer-events-none absolute inset-0 rounded-2xl border-2 border-dashed border-foreground/50 bg-background/40" />
@@ -684,7 +978,7 @@ export default function Vectorizar(): React.JSX.Element {
                 )}
               >
                 <Upload className="mb-3 h-9 w-9 text-muted-foreground" />
-                <p className="text-base font-semibold">Arrastra tu imagen aquí</p>
+                <p className="text-base font-semibold">Arrastrá tu imagen aquí</p>
                 <p className="mt-1 text-sm text-muted-foreground">JPG · PNG · WEBP</p>
               </div>
             </section>
@@ -698,7 +992,7 @@ export default function Vectorizar(): React.JSX.Element {
           />
         </div>
 
-        {/* Config */}
+        {/* Panel derecho */}
         <aside className="w-[300px] shrink-0 overflow-y-auto border-l border-border p-6">
           <h3 className="mb-4 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Ajustes
@@ -725,15 +1019,15 @@ export default function Vectorizar(): React.JSX.Element {
           </div>
           <p className="mb-5 text-xs text-muted-foreground">
             {config.method === 'recraft'
-              ? 'Recraft (IA, ~$0.01/img). Requiere API key. Suele dar curvas muy limpias.'
+              ? 'Recraft (IA, ~$0.01/img). Requiere API key. Curvas muy limpias; la edición de objetos/zonas es del motor Local.'
               : 'Potrace por capas: gratis y privado. Bueno para la mayoría de los logos.'}
           </p>
 
           {config.method === 'local' && (
             <>
           {/* Flujo profesional: vectorizar el diseño COMPLETO (fondo incluido) y después
-              quitar lo que sobre con "Editar zona → Borrar". El blanco queda como capa
-              imprimible (DTF sobre prenda oscura). */}
+              quitar lo que sobre seleccionando objetos o con la herramienta de zona. El
+              blanco queda como capa imprimible (DTF sobre prenda oscura). */}
           <label className="mb-1 flex items-center justify-between text-sm font-medium">
             <span>Conservar fondo</span>
             <input
@@ -745,7 +1039,7 @@ export default function Vectorizar(): React.JSX.Element {
           </label>
           <p className="mb-5 text-xs text-muted-foreground">
             {config.keepBackground
-              ? 'Vectoriza TODO el diseño, fondo incluido (los blancos quedan como capa imprimible). Quitá lo que sobre con “Editar zona → Borrar”.'
+              ? 'Vectoriza TODO el diseño, fondo incluido (los blancos quedan como capa imprimible). Quitá lo que sobre clickeándolo y Borrar.'
               : 'El fondo liso del borde se quita solo. Activá esto si el fondo es parte del diseño.'}
           </p>
 
@@ -791,30 +1085,12 @@ export default function Vectorizar(): React.JSX.Element {
               <div className="mb-2 flex items-center justify-between">
                 <label className="text-sm font-medium">Capas · {palette.length}</label>
                 <div className="flex items-center gap-1">
-                  <button
-                    type="button"
-                    title="Deshacer (⌘Z)"
-                    disabled={!canUndo}
-                    onClick={undo}
-                    className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
-                  >
-                    <Undo2 className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    title="Rehacer (⌘⇧Z)"
-                    disabled={!canRedo}
-                    onClick={redo}
-                    className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-30"
-                  >
-                    <Redo2 className="h-3.5 w-3.5" />
-                  </button>
                   {anyHidden && (
                     <button
                       type="button"
                       title="Mostrar todas las capas"
                       onClick={showAll}
-                      className="ml-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+                      className="text-xs font-medium text-muted-foreground hover:text-foreground"
                     >
                       Mostrar todas
                     </button>
@@ -822,6 +1098,7 @@ export default function Vectorizar(): React.JSX.Element {
                   {config.edit && (
                     <button
                       type="button"
+                      title="Vuelve la paleta al estado inicial"
                       onClick={() => commitEdit(undefined, null)}
                       className="ml-1 text-xs font-medium text-muted-foreground hover:text-foreground"
                     >
@@ -832,7 +1109,8 @@ export default function Vectorizar(): React.JSX.Element {
               </div>
               <p className="mb-2 text-[11px] leading-snug text-muted-foreground">
                 La capa cambia <span className="font-semibold">todos</span> los objetos de ese
-                color. Para uno solo (una letra, el gorro…), hacé <span className="font-semibold">clic sobre él</span> en el lienzo.
+                color — para uno solo, hacé <span className="font-semibold">clic sobre él</span> en el lienzo.
+                Ojo = ocultar · ojo enmarcado = ver sola · flecha = exportar la capa (SVG).
               </p>
               <div className="space-y-1.5">
                 {palette.map((c, i) => {
@@ -851,7 +1129,7 @@ export default function Vectorizar(): React.JSX.Element {
                         {hidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                       </button>
                       <label
-                        title="Recolorear capa"
+                        title="Recolorear TODOS los objetos de este color"
                         className="relative h-7 w-7 shrink-0 cursor-pointer overflow-hidden rounded-md border border-border"
                       >
                         <span className="block h-full w-full" style={{ backgroundColor: rgbToHex(cur) }} />
@@ -873,7 +1151,7 @@ export default function Vectorizar(): React.JSX.Element {
                       </span>
                       <button
                         type="button"
-                        title={isolated ? 'Mostrar todas' : 'Aislar (ver solo esta)'}
+                        title={isolated ? 'Mostrar todas' : 'Ver sola esta capa'}
                         onClick={() => isolateLayer(i)}
                         className={cn(
                           'flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border transition hover:text-foreground',
@@ -885,7 +1163,7 @@ export default function Vectorizar(): React.JSX.Element {
                       <button
                         type="button"
                         title="Exportar esta capa como SVG"
-                        onClick={() => exportLayer(i)}
+                        onClick={() => void exportLayer(i)}
                         className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border text-muted-foreground transition hover:text-foreground"
                       >
                         <Download className="h-3.5 w-3.5" />
@@ -894,9 +1172,68 @@ export default function Vectorizar(): React.JSX.Element {
                   )
                 })}
               </div>
-              <p className="mt-2 text-xs text-muted-foreground">
-                Ojo = ver/ocultar · lupa = ver solo esa · tocá el color para recolorear ·
-                descarga = exportar esa capa (SVG).
+              {layerNote && (
+                <p className="mt-2 rounded-md bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-300">
+                  {layerNote}
+                </p>
+              )}
+            </div>
+          )}
+
+          {/* Grupos con nombre: "Letras", "Gorro", "Barba"… (selecciones guardadas). */}
+          {canEditRaster && groups.length > 0 && (
+            <div className="mb-5" onMouseLeave={() => setGroupHover(null)}>
+              <label className="mb-2 block text-sm font-medium">Grupos · {groups.length}</label>
+              <div className="space-y-1.5">
+                {groups.map((g) => (
+                  <div
+                    key={g.id}
+                    className={cn(
+                      'flex items-center gap-1.5 rounded-md px-1 py-0.5 transition',
+                      groupHover === g.id && 'bg-sky-400/10'
+                    )}
+                    onMouseEnter={() => setGroupHover(g.id)}
+                  >
+                    <label
+                      title="Recolorear TODO el grupo"
+                      className="relative h-7 w-7 shrink-0 cursor-pointer overflow-hidden rounded-md border border-border"
+                    >
+                      <span className="block h-full w-full" style={{ backgroundColor: g.color ?? '#888888' }} />
+                      <input
+                        type="color"
+                        value={g.color ?? '#888888'}
+                        disabled={busy}
+                        onChange={(ev) => void recolorGroup(g, ev.target.value)}
+                        className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+                      />
+                    </label>
+                    <input
+                      type="text"
+                      value={g.name}
+                      onChange={(ev) => renameGroup(g.id, ev.target.value)}
+                      onBlur={persistGroups}
+                      onKeyDown={(ev) => {
+                        if (ev.key === 'Enter') (ev.target as HTMLInputElement).blur()
+                      }}
+                      className="w-0 min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 py-1 text-xs font-medium outline-none transition focus:border-border"
+                    />
+                    <span className="shrink-0 text-[11px] text-muted-foreground">
+                      {g.seeds.length} obj
+                    </span>
+                    <button
+                      type="button"
+                      title="Eliminar el grupo (no toca el diseño)"
+                      onClick={() => deleteGroup(g.id)}
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
+                Tocá el swatch y se recolorea todo el grupo. Pasá el mouse para verlo en el
+                lienzo. Para crear uno: seleccioná objetos (shift+clic) → «Guardar como grupo».
               </p>
             </div>
           )}
@@ -926,7 +1263,7 @@ export default function Vectorizar(): React.JSX.Element {
 
           {!hasImage && (
             <p className="mt-6 rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground">
-              Subí una imagen y se vectoriza automáticamente. Ajustá los settings para reprocesar.
+              Subí una imagen y se vectoriza automáticamente. Ajustá los controles para reprocesar.
             </p>
           )}
         </aside>
