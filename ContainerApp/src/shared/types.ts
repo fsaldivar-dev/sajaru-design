@@ -112,10 +112,13 @@ export interface VectorGroup {
   /** Último color aplicado al grupo (swatch del panel). */
   color?: string
   seeds: Array<{ px: number; py: number }>
-  /** Máscara de la selección (solo grupos creados con marcos/restas). */
+  /** Máscara de la selección (esténcil). Los grupos nuevos siempre la llevan; los viejos
+   *  por semillas se convierten al primer uso. */
   maskPng?: ArrayBuffer
   maskW?: number
   maskH?: number
+  /** Apartado: no se ve ni se selecciona en el lienzo (para afinar el resto). */
+  hidden?: boolean
 }
 
 /** Config que la mini app Mejorar manda al comando `enhance` del sidecar. */

@@ -109,12 +109,23 @@ export default function Vectorizar(): React.JSX.Element {
   const [groupHover, setGroupHover] = useState<string | null>(null)
   const [hoverComps, setHoverComps] = useState<Component[]>([])
   const [layerNote, setLayerNote] = useState<string | null>(null)
+  const [addToOpen, setAddToOpen] = useState(false)
+  // Grupos APARTADOS (ojo cerrado): sus píxeles no se ven (wash oscuro) ni se seleccionan
+  // (el raster de selección los tiene apagados). hiddenTick fuerza el refresco del overlay;
+  // rasterTick avisa que el raster del resultado terminó de cargar.
+  const [hiddenTick, setHiddenTick] = useState(0)
+  const [rasterTick, setRasterTick] = useState(0)
 
   const tokenRef = useRef(0)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const resultUrlRef = useRef<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const rasterRef = useRef<Raster | null>(null)
+  // Raster de SELECCIÓN: el vigente con los grupos apartados apagados (alfa 0) — clics y
+  // marcos no pueden agarrar lo que apartaste. Null = usar rasterRef tal cual.
+  const selRasterRef = useRef<Raster | null>(null)
+  // Wash oscuro de los grupos apartados (se compone bajo el resaltado de selección).
+  const hiddenWashRef = useRef<HTMLCanvasElement | null>(null)
   const hoverCacheRef = useRef<Map<string, Component[]>>(new Map())
   const layerNoteTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const hasImage = Boolean(source)
@@ -155,6 +166,7 @@ export default function Vectorizar(): React.JSX.Element {
       (r) => {
         if (dead) return
         rasterRef.current = r
+        setRasterTick((t) => t + 1)
         if (seeds.length) {
           const revived = seeds
             .map((s) => floodComponent(r, s.px * r.w, s.py * r.h))
@@ -225,14 +237,88 @@ export default function Vectorizar(): React.JSX.Element {
     setHoverComps(comps)
   }, [groupHover, groups])
 
-  // Overlay de resaltado: (selección − restas) + grupo hovereado, compuesto por CompareView.
+  /** Máscara del grupo resuelta al raster vigente: esténcil decodificado (re-escalado), o
+   *  flood de las semillas de los grupos viejos. */
+  async function resolveGroupMask(g: VectorGroup, raster: Raster): Promise<Uint8Array | null> {
+    if (g.maskPng) {
+      const comp = await pngBytesToComponent(g.maskPng, raster.w, raster.h)
+      return comp?.mask ?? null
+    }
+    const comps = g.seeds
+      .map((s) => floodComponent(raster, s.px * raster.w, s.py * raster.h))
+      .filter((c): c is Component => c !== null)
+    if (!comps.length) return null
+    const mask = new Uint8Array(raster.w * raster.h)
+    for (const c of comps) for (let p = 0; p < mask.length; p++) if (c.mask[p]) mask[p] = 1
+    return mask
+  }
+
+  // APARTADOS: recomputa el raster de selección (píxeles apartados → alfa 0) y el wash
+  // visual, cada vez que cambia qué grupos están ocultos o carga un resultado nuevo.
+  const hiddenIds = groups.filter((g) => g.hidden).map((g) => g.id).join(',')
+  useEffect(() => {
+    let dead = false
+    const raster = rasterRef.current
+    selRasterRef.current = null
+    hiddenWashRef.current = null
+    setHiddenTick((t) => t + 1)
+    if (!raster || !hiddenIds) return
+    const hs = groups.filter((g) => g.hidden)
+    void Promise.all(hs.map((g) => resolveGroupMask(g, raster))).then((masks) => {
+      if (dead) return
+      const union = new Uint8Array(raster.w * raster.h)
+      for (const m of masks) if (m) for (let p = 0; p < union.length; p++) if (m[p]) union[p] = 1
+      const data = new Uint8ClampedArray(raster.data)
+      for (let p = 0; p < union.length; p++) if (union[p]) data[p * 4 + 3] = 0
+      selRasterRef.current = { data, w: raster.w, h: raster.h }
+      const c = document.createElement('canvas')
+      c.width = raster.w
+      c.height = raster.h
+      const g2 = c.getContext('2d')
+      if (g2) {
+        const im = g2.createImageData(raster.w, raster.h)
+        for (let p = 0; p < union.length; p++) {
+          if (!union[p]) continue
+          const i = p * 4
+          im.data[i] = 12
+          im.data[i + 1] = 14
+          im.data[i + 2] = 18
+          im.data[i + 3] = 205
+        }
+        g2.putImageData(im, 0, 0)
+      }
+      hiddenWashRef.current = c
+      setHiddenTick((t) => t + 1)
+    })
+    return () => {
+      dead = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hiddenIds, rasterTick])
+
+  /** Raster que VEN las herramientas de selección (sin los grupos apartados). */
+  const selRaster = (): Raster | null => selRasterRef.current ?? rasterRef.current
+
+  // Overlay: wash de los apartados debajo + resaltado de (selección − restas) + hover.
   const overlay = useMemo(() => {
     const raster = rasterRef.current
     if (!raster) return null
     const eff = effectiveMask(raster.w, raster.h, [...selComps, ...hoverComps], selSubs)
-    if (!eff) return null
-    return buildOverlayFromMask(raster.w, raster.h, eff.mask)
-  }, [selComps, selSubs, hoverComps])
+    const wash = hiddenWashRef.current
+    if (!eff && !wash) return null
+    const c = document.createElement('canvas')
+    c.width = raster.w
+    c.height = raster.h
+    const g = c.getContext('2d')
+    if (!g) return null
+    if (wash) g.drawImage(wash, 0, 0)
+    if (eff) {
+      const so = buildOverlayFromMask(raster.w, raster.h, eff.mask)
+      if (so) g.drawImage(so, 0, 0)
+    }
+    return c
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selComps, selSubs, hoverComps, hiddenTick])
 
   // Handoff: si otra mini app nos mandó una imagen ("Enviar a → Vectorizar"), la
   // pre-cargamos al montar. consumeTransfer() es consume-once: no recarga en re-renders.
@@ -327,8 +413,9 @@ export default function Vectorizar(): React.JSX.Element {
         return
       }
       if (e.key === 'Escape') {
-        // De a una capa por pulsación (estándar): menú → selección.
-        if (exportOpen) setExportOpen(false)
+        // De a una capa por pulsación (estándar): menús → selección.
+        if (addToOpen) setAddToOpen(false)
+        else if (exportOpen) setExportOpen(false)
         else if (selComps.length || selSubs.length) {
           setSelComps([])
           setSelSubs([])
@@ -343,7 +430,7 @@ export default function Vectorizar(): React.JSX.Element {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hist, uhist, source, selComps, selSubs, busy, actionColor, exportOpen])
+  }, [hist, uhist, source, selComps, selSubs, busy, actionColor, exportOpen, addToOpen])
 
   function handleFiles(files: FileList | null): void {
     const f = files?.[0]
@@ -617,7 +704,7 @@ export default function Vectorizar(): React.JSX.Element {
     opts: { additive: boolean; subtract: boolean }
   ): void {
     if (busy || !result || !canEditRaster) return
-    const raster = rasterRef.current
+    const raster = selRaster() // los grupos apartados no entran al marco
     if (!raster) return
     if (opts.subtract) {
       const m = rectMask(raster, rect)
@@ -643,7 +730,7 @@ export default function Vectorizar(): React.JSX.Element {
   /** Conmutador del alcance del marco (barra contextual): re-computa TODAS las marquesinas
    *  de la selección con el alcance elegido — instantáneo, es puro cálculo local. */
   function setMarqueeScope(scope: 'figuras' | 'color'): void {
-    const raster = rasterRef.current
+    const raster = selRaster()
     if (!raster) return
     setSelComps((s) =>
       s.map((c) => {
@@ -758,7 +845,7 @@ export default function Vectorizar(): React.JSX.Element {
    *  solo (las acciones viven en la barra contextual). */
   function onPickPoint(p: CanvasPick): void {
     if (busy || !result || !canEditRaster) return
-    const raster = rasterRef.current
+    const raster = selRaster() // clic sobre un grupo apartado = clic en vacío
     if (!raster) return
     if (!p.hex) {
       if (!p.additive) {
@@ -790,34 +877,23 @@ export default function Vectorizar(): React.JSX.Element {
     setActionColor(comp.hex)
   }
 
-  /** Guarda la selección actual como GRUPO con nombre. Selecciones de clics → semillas
-   *  normalizadas (se re-floodean: siguen al objeto). Selecciones con marcos/restas →
-   *  MÁSCARA (el sidecar la re-escala al raster vigente al aplicar). */
+  /** Guarda la selección actual como GRUPO con nombre — SIEMPRE como esténcil (máscara
+   *  congelada al crear): recolorear el diseño no puede "fusionarlo" con vecinos del mismo
+   *  color, como pasaba con los grupos por semillas re-floodeadas. */
   async function saveGroup(): Promise<void> {
     const raster = rasterRef.current
     if (!raster || !selComps.length) return
-    const id = `g${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`
-    let g: VectorGroup
-    if (pureComps) {
-      g = {
-        id,
-        name: `Grupo ${groups.length + 1}`,
-        color: selComps[0].hex,
-        seeds: selComps.map((c) => ({ px: c.seed.x / raster.w, py: c.seed.y / raster.h }))
-      }
-    } else {
-      const eff = effectiveMask(raster.w, raster.h, selComps, selSubs)
-      if (!eff) return
-      const bytes = await maskToPngBytes(raster.w, raster.h, eff.mask)
-      g = {
-        id,
-        name: `Grupo ${groups.length + 1}`,
-        color: selComps[0].hex,
-        seeds: [],
-        maskPng: bytes,
-        maskW: raster.w,
-        maskH: raster.h
-      }
+    const eff = effectiveMask(raster.w, raster.h, selComps, selSubs)
+    if (!eff) return
+    const bytes = await maskToPngBytes(raster.w, raster.h, eff.mask)
+    const g: VectorGroup = {
+      id: `g${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`,
+      name: `Grupo ${groups.length + 1}`,
+      color: selComps[0].hex,
+      seeds: [],
+      maskPng: bytes,
+      maskW: raster.w,
+      maskH: raster.h
     }
     const next = [...groups, g]
     setGroups(next)
@@ -826,35 +902,57 @@ export default function Vectorizar(): React.JSX.Element {
     setSelSubs([])
   }
 
-  /** Recolorea TODO el grupo tocando su swatch (un paso del historial). Grupos por máscara
-   *  van directo al sidecar (que re-escala la máscara al raster vigente); por semillas se
-   *  re-floodean, salteando con aviso las que ya no existen (las borraste). */
-  async function recolorGroup(g: VectorGroup, hex: string): Promise<void> {
+  /** Une la selección actual a un grupo EXISTENTE (unión de esténciles) — para completar
+   *  un grupo sin rehacer toda la selección. Convierte grupos viejos de semillas. */
+  async function addToGroup(target: VectorGroup): Promise<void> {
+    const raster = rasterRef.current
+    if (!raster || !selComps.length) return
+    const eff = effectiveMask(raster.w, raster.h, selComps, selSubs)
+    if (!eff) return
+    const prev = await resolveGroupMask(target, raster)
+    const union = new Uint8Array(raster.w * raster.h)
+    if (prev) for (let p = 0; p < union.length; p++) if (prev[p]) union[p] = 1
+    for (let p = 0; p < union.length; p++) if (eff.mask[p]) union[p] = 1
+    const bytes = await maskToPngBytes(raster.w, raster.h, union)
+    const next = groups.map((x) =>
+      x.id === target.id ? { ...x, seeds: [], maskPng: bytes, maskW: raster.w, maskH: raster.h } : x
+    )
+    setGroups(next)
+    hoverCacheRef.current.delete(target.id)
+    void window.api.vectorize.groupsSet(next)
+    setSelComps([])
+    setSelSubs([])
+    setAddToOpen(false)
+  }
+
+  /** Recolorea TODO el grupo tocando su swatch (un paso del historial), siempre vía su
+   *  esténcil. Los grupos viejos por semillas se CONGELAN como esténcil en el primer uso
+   *  (así el recolor no puede expandirse al componente fusionado con un vecino). */
+  async function recolorGroup(g0: VectorGroup, hex: string): Promise<void> {
     const raster = rasterRef.current
     if (!raster || busy) return
-    if (g.maskPng) {
-      const ok = await runMaskEdit(g.maskPng, 'recolor', hex)
-      if (!ok) return
-      const next = groups.map((x) => (x.id === g.id ? { ...x, color: hex } : x))
-      setGroups(next)
-      void window.api.vectorize.groupsSet(next)
-      return
+    let g = g0
+    if (!g.maskPng) {
+      const m = await resolveGroupMask(g, raster)
+      if (!m) {
+        setError({ code: 'E_GROUP', message: `"${g.name}" ya no tiene objetos en el diseño (¿los borraste?)` })
+        return
+      }
+      const bytes = await maskToPngBytes(raster.w, raster.h, m)
+      g = { ...g, seeds: [], maskPng: bytes, maskW: raster.w, maskH: raster.h }
     }
-    const alive = g.seeds
-      .map((s) => floodComponent(raster, s.px * raster.w, s.py * raster.h))
-      .filter((c): c is Component => c !== null)
-    if (!alive.length) {
-      setError({ code: 'E_GROUP', message: `"${g.name}" ya no tiene objetos en el diseño (¿los borraste?)` })
-      return
-    }
-    if (alive.length < g.seeds.length) {
-      setLayerNote(`"${g.name}": ${alive.length} de ${g.seeds.length} objetos siguen en el diseño; recoloreo esos.`)
-      clearTimeout(layerNoteTimer.current)
-      layerNoteTimer.current = setTimeout(() => setLayerNote(null), 5000)
-    }
-    const ok = await runObjectEditPoints(alive.map((c) => c.seed), 'recolor', hex)
+    const ok = await runMaskEdit(g.maskPng as ArrayBuffer, 'recolor', hex)
     if (!ok) return
-    const next = groups.map((x) => (x.id === g.id ? { ...x, color: hex } : x))
+    const next = groups.map((x) => (x.id === g.id ? { ...g, color: hex } : x))
+    setGroups(next)
+    hoverCacheRef.current.delete(g.id)
+    void window.api.vectorize.groupsSet(next)
+  }
+
+  /** Ojo del grupo: apartado = no se ve (velo oscuro) ni se selecciona — para afinar la
+   *  selección de lo que falta sin que el marco agarre lo ya agrupado. */
+  function toggleGroupHidden(id: string): void {
+    const next = groups.map((g) => (g.id === id ? { ...g, hidden: !g.hidden } : g))
     setGroups(next)
     void window.api.vectorize.groupsSet(next)
   }
@@ -1144,6 +1242,40 @@ export default function Vectorizar(): React.JSX.Element {
                   >
                     Guardar como grupo
                   </button>
+                  {groups.length > 0 && (
+                    <span className="relative">
+                      <button
+                        type="button"
+                        onClick={() => setAddToOpen((o) => !o)}
+                        title="Sumá esta selección a un grupo que ya existe (sin rehacerlo)"
+                        className="flex items-center gap-1 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition hover:text-foreground"
+                      >
+                        Añadir a
+                        <ChevronDown className="h-3 w-3" />
+                      </button>
+                      {addToOpen && (
+                        <>
+                          <span className="fixed inset-0 z-40" onClick={() => setAddToOpen(false)} />
+                          <span className="absolute left-0 top-full z-50 mt-1 flex w-44 flex-col overflow-hidden rounded-lg border border-border bg-background py-1 shadow-xl">
+                            {groups.map((g) => (
+                              <button
+                                key={g.id}
+                                type="button"
+                                onClick={() => void addToGroup(g)}
+                                className="flex items-center gap-2 px-2.5 py-1.5 text-left text-xs transition hover:bg-muted"
+                              >
+                                <span
+                                  className="h-3.5 w-3.5 shrink-0 rounded border border-border"
+                                  style={{ backgroundColor: g.color ?? '#888888' }}
+                                />
+                                <span className="truncate">{g.name}</span>
+                              </button>
+                            ))}
+                          </span>
+                        </>
+                      )}
+                    </span>
+                  )}
                   <span className="ml-auto hidden text-[11px] text-muted-foreground lg:inline">
                     ⌥ + arrastrá = restar · shift suma · Escape deselecciona
                   </span>
@@ -1418,10 +1550,19 @@ export default function Vectorizar(): React.JSX.Element {
                     key={g.id}
                     className={cn(
                       'flex items-center gap-1.5 rounded-md px-1 py-0.5 transition',
-                      groupHover === g.id && 'bg-sky-400/10'
+                      groupHover === g.id && 'bg-sky-400/10',
+                      g.hidden && 'opacity-50'
                     )}
                     onMouseEnter={() => setGroupHover(g.id)}
                   >
+                    <button
+                      type="button"
+                      title={g.hidden ? 'Traer de vuelta al lienzo' : 'Apartar: no se ve ni se selecciona (para afinar el resto)'}
+                      onClick={() => toggleGroupHidden(g.id)}
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground"
+                    >
+                      {g.hidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+                    </button>
                     <label
                       title="Recolorear TODO el grupo"
                       className="relative h-7 w-7 shrink-0 cursor-pointer overflow-hidden rounded-md border border-border"
@@ -1460,8 +1601,9 @@ export default function Vectorizar(): React.JSX.Element {
                 ))}
               </div>
               <p className="mt-2 text-[11px] leading-snug text-muted-foreground">
-                Tocá el swatch y se recolorea todo el grupo. Pasá el mouse para verlo en el
-                lienzo. Para crear uno: seleccioná objetos (shift+clic) → «Guardar como grupo».
+                Swatch = recolorear todo el grupo · mouse encima = verlo en el lienzo ·
+                ojo = apartarlo (no se ve ni se selecciona, para afinar el resto) · con una
+                selección activa, «Añadir a» la suma a un grupo existente.
               </p>
             </div>
           )}
