@@ -269,7 +269,7 @@ La herramienta te tira **sugerencias** según lo que detecta (por ejemplo, te pr
 6. **Grupos con nombre**: guardá una selección de clics como grupo ("Letras", "Gorro", "Barba"…). En el panel **Grupos**: tocá el **swatch** y se recolorea **todo el grupo** de una; pasá el mouse por la fila y se resalta en el lienzo; renombralo escribiendo sobre el nombre. Los grupos sobreviven re-trazados.
 7. **Editá la paleta** (panel **Capas**): cambiar el color de una capa cambia **todos** los objetos de ese color; también podés ocultar capas, verlas solas o bajarlas por separado.
 8. **Deshacer de verdad**: **⌘Z** deshace LA última acción — sea de capas, de selección o de zona — de a un paso (un grupo entero cuenta como un paso). **⌘⇧Z** rehace. **Quitar ediciones (N)** borra todas las ediciones raster de una (esto sí no tiene deshacer: pide confirmación).
-9. Exportá con el botón **Exportar** (SVG, PDF, EPS, PNG o copiar). Con motor **Local**, las ediciones de objeto/zona **quedan en el vector** (el SVG/PDF/EPS exporta exactamente lo que ves).
+9. Exportá con el botón **Exportar**. El **PNG** es EXACTAMENTE lo que ves, pixel por pixel. El **SVG/PDF/EPS** se traza **una sola vez al exportar** a partir de ese resultado (con tus colores protegidos) — mientras editás no hay ningún re-trazado moviéndote los bordes del arte.
 
 **Formatos de salida:** **SVG**, **PDF**, **EPS** o **PNG**. También podés **bajar las capas por color** (una por cada color de la paleta).
 

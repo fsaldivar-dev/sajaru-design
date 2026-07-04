@@ -533,7 +533,10 @@ export default function Vectorizar(): React.JSX.Element {
     const c = palette[i]
     if (!c) return
     const cur = config.edit?.[i]?.to ?? c
+    const token = ++tokenRef.current
+    setProgress({ value: 0, message: 'Exportando la capa…' })
     const r = await window.api.vectorize.saveLayerSvg(rgbToHex(cur), `${baseName()}-capa-${i + 1}.svg`)
+    if (token === tokenRef.current) setProgress(null)
     if (!r.saved && !r.path) {
       clearTimeout(layerNoteTimer.current)
       setLayerNote('Esa capa ya no está en el vector actual (¿la ocultaste o recoloreaste?).')
@@ -541,11 +544,24 @@ export default function Vectorizar(): React.JSX.Element {
     }
   }
 
+  /** Export SVG: si hay ediciones sin trazar, el main consolida UNA vez (re-trazado con
+   *  paleta protegida) — mostramos el progreso y lo limpiamos al volver. */
+  async function onExportSvg(): Promise<void> {
+    if (!result) return
+    const token = ++tokenRef.current
+    setProgress({ value: 0, message: 'Exportando SVG…' })
+    await window.api.vectorize.saveSvg(`${baseName()}.svg`)
+    if (token === tokenRef.current) setProgress(null)
+  }
+
   /** Exporta el vector completo a PDF (vectorial) o EPS (Ghostscript). Surface del error
    *  si falta gs para EPS. */
   async function onSaveVector(format: 'pdf' | 'eps'): Promise<void> {
     if (!result) return
+    const token = ++tokenRef.current
+    setProgress({ value: 0, message: `Exportando ${format.toUpperCase()}…` })
     const r = await window.api.vectorize.saveVector(format, `${baseName()}.${format}`)
+    if (token === tokenRef.current) setProgress(null)
     if (!r.saved && r.error) setError({ code: 'E_EXPORT', message: r.error })
   }
 
@@ -862,7 +878,7 @@ export default function Vectorizar(): React.JSX.Element {
                 <div className="absolute right-0 top-full z-50 mt-1 w-52 overflow-hidden rounded-xl border border-border bg-background py-1 shadow-xl">
                   {(
                     [
-                      { label: 'Guardar SVG', note: 'vector real', run: () => void window.api.vectorize.saveSvg(`${baseName()}.svg`) },
+                      { label: 'Guardar SVG', note: 'vector real', run: () => void onExportSvg() },
                       { label: 'PDF', note: 'imprenta / plotter', run: () => void onSaveVector('pdf') },
                       { label: 'EPS', note: 'imprenta / plotter', run: () => void onSaveVector('eps') },
                       { label: 'Guardar PNG', note: `${config.size}px`, run: () => void window.api.vectorize.savePng(`${baseName()}-vector.png`) },

@@ -192,7 +192,7 @@ Si quedaron manchitas o líneas raras en los bordes (típico cuando el fondo ori
 - **Quitar ediciones (N)** borra TODAS las ediciones raster de una (las de capas quedan).
 - **Restaurar** (en Capas) vuelve la paleta al estado inicial.
 
-> Con motor **Local**, todas estas ediciones **quedan grabadas en el vector**: el SVG/PDF/EPS que exportás es exactamente lo que ves. Con **IA Premium** las curvas pagas no se re-trazan, así que la edición de objetos/zonas está deshabilitada (las capas sí se editan, sin gastar créditos).
+> Con motor **Local**: el **PNG** exporta exactamente lo que ves, pixel por pixel; el **SVG/PDF/EPS** se traza **una sola vez al exportar** desde ese resultado (mientras editás, nada se re-traza ni se mueven bordes). Con **IA Premium** las curvas pagas no se re-trazan, así que la edición de objetos/zonas está deshabilitada (las capas sí se editan, sin gastar créditos).
 
 ### Exportar el vector
 

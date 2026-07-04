@@ -483,8 +483,11 @@ export async function vectorizeStep(
       if (e) e.c++
       else exact.set(k, { r, g, b, c: 1 })
     }
+    // Los colores PROTEGIDOS (los que el usuario pintó) entran SIEMPRE, aunque su área sea
+    // ínfima: una edición de 40 px no puede desaparecer en silencio al exportar.
+    const protectedKeys = new Set((opts.protectColors ?? []).map((c) => (c.r << 16) | (c.g << 8) | c.b))
     palette = [...exact.values()]
-      .filter((e) => e.c > opaque * 0.0001)
+      .filter((e) => e.c > opaque * 0.0001 || protectedKeys.has((e.r << 16) | (e.g << 8) | e.b))
       .sort((a, b) => b.c - a.c)
       .slice(0, 64)
       .map((e) => ({ r: e.r, g: e.g, b: e.b, count: e.c }))

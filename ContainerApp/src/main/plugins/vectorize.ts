@@ -56,6 +56,11 @@ let redoFills: AreaFillEntry[][] = []
 // punto de partida para re-aplicar `areaFills` al deshacer de a una.
 let baseRaster: string | null = null
 let baseResult: { png: string; svg: string } | null = null
+// CONSOLIDACIÓN PEREZOSA: true cuando el SVG de lastResult NO refleja las ediciones raster
+// vigentes. El preview siempre es el raster editado EXACTO (cero re-trazado por edición →
+// cero daño colateral y ediciones de ~0.5s); el vector se consolida UNA sola vez, al
+// exportar (ensureConsolidated).
+let dirtyVector = false
 // GRUPOS con nombre del diseñador ("Letras", "Gorro"…): semillas normalizadas de objetos.
 // Viven acá (no en el renderer) para sobrevivir cambios de mini app, igual que areaFills.
 let groups: Array<{
@@ -79,6 +84,7 @@ async function setImage(bytes: ArrayBuffer, name: string): Promise<void> {
   redoFills = []
   baseRaster = null
   baseResult = null
+  dirtyVector = false
   groups = []
 }
 
@@ -172,19 +178,13 @@ async function process(config: VectorizeConfig, sender: WebContents): Promise<Bg
     baseRaster = pngPath0
     baseResult = { png: pngPath0, svg: svgPath }
     // Re-aplicá las ediciones de zona/objeto sobre el PNG recién trazado (persisten entre
-    // re-trazados) y CONSOLIDALAS al vector: el SVG exportado refleja lo que se ve.
-    // SOLO con motor local: estamparlas sobre el PNG de Recraft dejaría un preview que el
-    // SVG premium (que no se re-traza) no puede exportar — quedan "en pausa" hasta volver.
+    // re-trazados). SOLO con motor local: estamparlas sobre el PNG de Recraft dejaría un
+    // preview que el SVG premium (que no se re-traza) no puede exportar — quedan "en
+    // pausa" hasta volver. La consolidación al vector es PEREZOSA (una vez, al exportar).
     const applyFills = areaFills.length > 0 && config.method === 'local'
-    let pngPath = applyFills ? await applyAreaFills(pngPath0, sender) : pngPath0
+    const pngPath = applyFills ? await applyAreaFills(pngPath0, sender) : pngPath0
     editedRaster = applyFills ? pngPath : null
-    if (applyFills) {
-      const c = await consolidateToVector(pngPath, sender)
-      if (c) {
-        pngPath = c.png
-        svgPath = c.svg
-      }
-    }
+    dirtyVector = applyFills
     const buf = await fs.readFile(pngPath)
     lastResult = { png: pngPath, svg: svgPath }
     // Cacheá el SVG base del vectorizado Premium (fresh, sin edición) para editar sin re-llamar.
@@ -250,16 +250,14 @@ async function areaFill(
   try {
     const data = r.data as { output?: string } | undefined
     const pngPath = String(data?.output ?? out)
-    // La cadena de ediciones vive en el raster de 1ª generación (nunca un consolidado).
+    // La cadena de ediciones vive en el raster de 1ª generación. El preview ES ese raster
+    // (exacto, sin re-trazar); el SVG se consolida al exportar (perezoso).
     editedRaster = pngPath
-    // CONSOLIDAR al vector: el SVG (y el PNG del preview) reflejan la edición.
-    const c = await consolidateToVector(pngPath, sender)
-    const finalPng = c?.png ?? pngPath
-    const finalSvg = c?.svg ?? lastResult.svg
-    const buf = await fs.readFile(finalPng)
-    lastResult = { png: finalPng, svg: finalSvg }
+    dirtyVector = true
+    const buf = await fs.readFile(pngPath)
+    lastResult = { png: pngPath, svg: lastResult.svg }
     const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
-    return { ok: true, bytes: ab, outputName: path.basename(finalPng), format: 'png' }
+    return { ok: true, bytes: ab, outputName: path.basename(pngPath), format: 'png' }
   } catch (e) {
     return { ok: false, error: { code: 'E_READ', message: (e as Error).message } }
   }
@@ -344,16 +342,14 @@ async function objectEdit(
     cur = String((r.data as { output?: string } | undefined)?.output ?? out)
   }
   try {
-    // La cadena de ediciones vive en el raster de 1ª generación (nunca un consolidado).
+    // La cadena de ediciones vive en el raster de 1ª generación. El preview ES ese raster;
+    // el SVG se consolida al exportar (perezoso).
     editedRaster = cur
-    // CONSOLIDAR al vector: el SVG (y el PNG del preview) reflejan la edición.
-    const c = await consolidateToVector(cur, sender)
-    const finalPng = c?.png ?? cur
-    const finalSvg = c?.svg ?? lastResult.svg
-    const buf = await fs.readFile(finalPng)
-    lastResult = { png: finalPng, svg: finalSvg }
+    dirtyVector = true
+    const buf = await fs.readFile(cur)
+    lastResult = { png: cur, svg: lastResult.svg }
     const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
-    return { ok: true, bytes: ab, outputName: path.basename(finalPng), format: 'png' }
+    return { ok: true, bytes: ab, outputName: path.basename(cur), format: 'png' }
   } catch (e) {
     return { ok: false, error: { code: 'E_READ', message: (e as Error).message } }
   }
@@ -389,13 +385,11 @@ async function maskEdit(
   try {
     const pngPath = String((r.data as { output?: string } | undefined)?.output ?? out)
     editedRaster = pngPath
-    const c = await consolidateToVector(pngPath, sender)
-    const finalPng = c?.png ?? pngPath
-    const finalSvg = c?.svg ?? lastResult.svg
-    const buf = await fs.readFile(finalPng)
-    lastResult = { png: finalPng, svg: finalSvg }
+    dirtyVector = true
+    const buf = await fs.readFile(pngPath)
+    lastResult = { png: pngPath, svg: lastResult.svg }
     const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
-    return { ok: true, bytes: ab, outputName: path.basename(finalPng), format: 'png' }
+    return { ok: true, bytes: ab, outputName: path.basename(pngPath), format: 'png' }
   } catch (e) {
     return { ok: false, error: { code: 'E_READ', message: (e as Error).message } }
   }
@@ -436,6 +430,7 @@ async function rebuildFromBase(sender: WebContents): Promise<BgProcessResult & {
   try {
     if (!areaFills.length) {
       editedRaster = null
+      dirtyVector = false
       lastResult = { ...baseResult }
       const buf = await fs.readFile(baseResult.png)
       const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
@@ -443,24 +438,35 @@ async function rebuildFromBase(sender: WebContents): Promise<BgProcessResult & {
     }
     const cur = await applyAreaFills(baseRaster, sender)
     editedRaster = cur
-    const c = await consolidateToVector(cur, sender)
-    const finalPng = c?.png ?? cur
-    const finalSvg = c?.svg ?? baseResult.svg
-    const buf = await fs.readFile(finalPng)
-    lastResult = { png: finalPng, svg: finalSvg }
+    dirtyVector = true
+    const buf = await fs.readFile(cur)
+    lastResult = { png: cur, svg: baseResult.svg }
     const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
-    return { ok: true, bytes: ab, outputName: path.basename(finalPng), format: 'png', remaining: areaFills.length }
+    return { ok: true, bytes: ab, outputName: path.basename(cur), format: 'png', remaining: areaFills.length }
   } catch (e) {
     return { ok: false, error: { code: 'E_READ', message: (e as Error).message } }
   }
 }
 
+/** Consolidación PEREZOSA: si hay ediciones raster sin trazar, re-traza el raster editado
+ *  UNA vez y refresca el SVG que exportamos. El preview no cambia (sigue siendo el raster
+ *  exacto): el costo del re-trazado se paga una sola vez, al exportar — no por edición. */
+async function ensureConsolidated(sender: WebContents): Promise<void> {
+  if (!dirtyVector || !editedRaster || !lastResult) return
+  if (!lastTrace || lastTrace.method !== 'local') return
+  const c = await consolidateToVector(editedRaster, sender)
+  if (c) {
+    lastResult = { png: lastResult.png, svg: c.svg }
+    dirtyVector = false
+  }
+}
+
 async function saveAs(
   kind: 'svg' | 'png',
-  suggestedName: string
+  suggestedName: string,
+  sender: WebContents
 ): Promise<{ saved: boolean; path?: string }> {
   if (!lastResult) return { saved: false }
-  const src = kind === 'svg' ? lastResult.svg : lastResult.png
   const win = BrowserWindow.getFocusedWindow()
   const opts = {
     defaultPath: suggestedName,
@@ -470,6 +476,9 @@ async function saveAs(
     ? await dialog.showSaveDialog(win, opts)
     : await dialog.showSaveDialog(opts)
   if (canceled || !filePath) return { saved: false }
+  // PNG = el preview EXACTO, tal cual se ve. SVG = trazado del resultado, consolidado acá.
+  if (kind === 'svg') await ensureConsolidated(sender)
+  const src = kind === 'svg' ? lastResult.svg : lastResult.png
   await fs.copyFile(src, filePath)
   return { saved: true, path: filePath }
 }
@@ -482,9 +491,13 @@ async function saveAs(
  */
 async function saveLayerSvg(
   color: string,
-  suggestedName: string
+  suggestedName: string,
+  sender: WebContents
 ): Promise<{ saved: boolean; path?: string }> {
   if (!lastResult) return { saved: false }
+  // La capa se recorta del SVG consolidado (si hay ediciones raster pendientes, trazarlas
+  // primero — el color pedido puede existir SOLO en el consolidado, p.ej. un recolor).
+  await ensureConsolidated(sender)
   let svg: string
   try {
     svg = await fs.readFile(lastResult.svg, 'utf8')
@@ -534,6 +547,7 @@ async function saveVector(
   sender: WebContents
 ): Promise<{ saved: boolean; path?: string; error?: string }> {
   if (!lastResult) return { saved: false }
+  await ensureConsolidated(sender)
   const tmp = path.join(tmpRoot(TMP), `export-${++exportCounter}.${format}`)
   const r = await runSidecar(
     ['svg2pdf', '-i', lastResult.svg, '-o', tmp, '--format', format, '--events'],
@@ -620,11 +634,15 @@ export function registerVectorizeIpc(ipcMain: IpcMain): void {
     return { ok: true }
   })
   ipcMain.handle('vec:clearAreaFills', () => clearAreaFills())
-  ipcMain.handle('vec:saveSvg', (_e, name: string) => saveAs('svg', name))
-  ipcMain.handle('vec:savePng', (_e, name: string) => saveAs('png', name))
-  ipcMain.handle('vec:saveLayerSvg', (_e, color: string, name: string) => saveLayerSvg(color, name))
+  // Los exports vectoriales entran a la MISMA cola que las ediciones: consolidan (mutan
+  // lastResult.svg) y jamás deben cruzarse con un area-fill en vuelo.
+  ipcMain.handle('vec:saveSvg', (e, name: string) => enqueue(() => saveAs('svg', name, e.sender)))
+  ipcMain.handle('vec:savePng', (e, name: string) => saveAs('png', name, e.sender))
+  ipcMain.handle('vec:saveLayerSvg', (e, color: string, name: string) =>
+    enqueue(() => saveLayerSvg(color, name, e.sender))
+  )
   ipcMain.handle('vec:saveVector', (e, format: 'pdf' | 'eps', name: string) =>
-    saveVector(format, name, e.sender)
+    enqueue(() => saveVector(format, name, e.sender))
   )
   ipcMain.handle('vec:copyResult', () => copyResult())
 }
