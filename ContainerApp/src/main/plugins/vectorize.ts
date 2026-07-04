@@ -18,6 +18,9 @@ const TMP = 'sajaru-vec'
 let currentInput: string | null = null
 let currentChild: ChildProcess | null = null
 let lastResult: { png: string; svg: string } | null = null
+// Metadatos del último trazado (para CONSOLIDAR ediciones al vector): la paleta fija con la
+// que re-trazar fiel, el tamaño de salida y el motor (solo local; no re-trazamos curvas Recraft).
+let lastTrace: { palette: RgbColor[]; size: number; method: 'local' | 'recraft' } | null = null
 // SVG base (agrupado por color) del último vectorizado Premium (Recraft). Se cachea para
 // editar las capas SOBRE ÉL (localmente, comando svg-edit) sin volver a llamar a la API.
 let recraftBaseSvg: string | null = null
@@ -132,9 +135,19 @@ async function process(config: VectorizeConfig, sender: WebContents): Promise<Bg
   try {
     const data = r.data as { output?: string; svg?: string; palette?: RgbColor[] } | undefined
     const pngPath0 = String(data?.output ?? out)
-    const svgPath = String(data?.svg ?? out.replace(/\.[^.]+$/, '.svg'))
-    // Re-aplicá las limpiezas de zona sobre el PNG recién trazado (persisten entre re-trazados).
-    const pngPath = areaFills.length ? await applyAreaFills(pngPath0, sender) : pngPath0
+    let svgPath = String(data?.svg ?? out.replace(/\.[^.]+$/, '.svg'))
+    // Metadatos para consolidar ediciones al vector (paleta fija del trazado actual).
+    lastTrace = { palette: data?.palette ?? [], size: config.size, method: config.method }
+    // Re-aplicá las ediciones de zona/objeto sobre el PNG recién trazado (persisten entre
+    // re-trazados) y CONSOLIDALAS al vector: el SVG exportado refleja lo que se ve.
+    let pngPath = areaFills.length ? await applyAreaFills(pngPath0, sender) : pngPath0
+    if (areaFills.length) {
+      const c = await consolidateToVector(pngPath, sender)
+      if (c) {
+        pngPath = c.png
+        svgPath = c.svg
+      }
+    }
     const buf = await fs.readFile(pngPath)
     lastResult = { png: pngPath, svg: svgPath }
     // Cacheá el SVG base del vectorizado Premium (fresh, sin edición) para editar sin re-llamar.
@@ -154,10 +167,9 @@ async function process(config: VectorizeConfig, sender: WebContents): Promise<Bg
 }
 
 /**
- * "Fundir al color predominante" en un rectángulo: corre el comando `area-fill` sobre el PNG
- * del último resultado (raster) y lo reemplaza. Sirve para tapar artefactos (línea de borde,
- * franjas) seleccionando una zona donde el color bueno predomina. NO toca el SVG (queda como
- * base vectorial); limpia el PNG/PDF exportado. `rect` viene en píxeles del PNG del resultado.
+ * Herramienta de ZONA (rect): fundir/borrar/recolorear sobre el raster del resultado, y
+ * CONSOLIDACIÓN al vector: tras aplicar, se re-traza con paleta fija para que el SVG (y
+ * PDF/EPS) exporten exactamente lo que se ve. `rect` en píxeles del PNG del resultado.
  */
 async function areaFill(
   rect: { x: number; y: number; w: number; h: number },
@@ -194,14 +206,65 @@ async function areaFill(
   try {
     const data = r.data as { output?: string } | undefined
     const pngPath = String(data?.output ?? out)
-    const buf = await fs.readFile(pngPath)
-    // El SVG no cambia (área es raster); solo reemplazamos el PNG del resultado.
-    lastResult = { png: pngPath, svg: lastResult.svg }
+    // CONSOLIDAR al vector: el SVG (y el PNG del preview) reflejan la edición.
+    const c = await consolidateToVector(pngPath, sender)
+    const finalPng = c?.png ?? pngPath
+    const finalSvg = c?.svg ?? lastResult.svg
+    const buf = await fs.readFile(finalPng)
+    lastResult = { png: finalPng, svg: finalSvg }
     const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
-    return { ok: true, bytes: ab, outputName: path.basename(pngPath), format: 'png' }
+    return { ok: true, bytes: ab, outputName: path.basename(finalPng), format: 'png' }
   } catch (e) {
     return { ok: false, error: { code: 'E_READ', message: (e as Error).message } }
   }
+}
+
+/** '#rrggbb' → {r,g,b}; null si no parsea. */
+function hexToRgb(hex: string): RgbColor | null {
+  const h = hex.replace('#', '')
+  if (!/^[0-9a-fA-F]{6}$/.test(h)) return null
+  return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16) }
+}
+
+/**
+ * CONSOLIDA las ediciones de zona/objeto AL VECTOR: re-traza el raster editado con la
+ * paleta FIJA (la del trazado + los colores nuevos de los recolores) en modo entrada-plana
+ * (--assume-flat: sin blur/upscale; --no-merge-thin: no matar los colores editados). El
+ * resultado es un SVG/PNG consistentes con lo que se ve — "Guardar SVG/PDF/EPS" exporta
+ * las ediciones. Solo motor local (las curvas Premium de Recraft no se pisan).
+ */
+async function consolidateToVector(
+  pngPath: string,
+  sender: WebContents
+): Promise<{ png: string; svg: string } | null> {
+  if (!lastTrace || lastTrace.method !== 'local' || lastTrace.palette.length === 0) return null
+  // Paleta fija = paleta del trazado + colores destino de los recolores (dedup).
+  const fixed: RgbColor[] = [...lastTrace.palette]
+  for (const f of areaFills) {
+    if (f.mode !== 'recolor' || !f.to) continue
+    const c = hexToRgb(f.to)
+    if (c && !fixed.some((p) => p.r === c.r && p.g === c.g && p.b === c.b)) fixed.push(c)
+  }
+  const out = path.join(tmpRoot(TMP), `vector-${++counter}.png`)
+  const r = await runSidecar(
+    [
+      'vectorize', '-i', pngPath, '-o', out,
+      '--size', String(lastTrace.size),
+      '--denoise', '0',
+      '--keep-background',
+      '--assume-flat',
+      '--no-merge-thin',
+      '--edit', JSON.stringify(fixed.map((c) => ({ r: c.r, g: c.g, b: c.b }))),
+      '--events'
+    ],
+    sender,
+    PROGRESS_CHANNEL
+  )
+  if (!r.ok) return null
+  const data = r.data as { output?: string; svg?: string } | undefined
+  const png = String(data?.output ?? out)
+  const svg = String(data?.svg ?? out.replace(/\.[^.]+$/, '.svg'))
+  return { png, svg }
 }
 
 /** Modo OBJETO: click → borra/recolorea el componente conectado del color clickeado.
@@ -233,10 +296,14 @@ async function objectEdit(
   try {
     const data = r.data as { output?: string } | undefined
     const pngPath = String(data?.output ?? out)
-    const buf = await fs.readFile(pngPath)
-    lastResult = { png: pngPath, svg: lastResult.svg }
+    // CONSOLIDAR al vector: el SVG (y el PNG del preview) reflejan la edición.
+    const c = await consolidateToVector(pngPath, sender)
+    const finalPng = c?.png ?? pngPath
+    const finalSvg = c?.svg ?? lastResult.svg
+    const buf = await fs.readFile(finalPng)
+    lastResult = { png: finalPng, svg: finalSvg }
     const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
-    return { ok: true, bytes: ab, outputName: path.basename(pngPath), format: 'png' }
+    return { ok: true, bytes: ab, outputName: path.basename(finalPng), format: 'png' }
   } catch (e) {
     return { ok: false, error: { code: 'E_READ', message: (e as Error).message } }
   }

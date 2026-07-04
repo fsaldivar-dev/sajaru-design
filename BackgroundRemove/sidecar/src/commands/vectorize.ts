@@ -61,6 +61,12 @@ export interface VectorizeOptions {
    * blancas legítimas (aro→alas) y comerse tinta imprimible (DTF sobre prenda oscura).
    */
   keepBackground?: boolean
+  /**
+   * La entrada YA es un póster plano (salida de un trazado previo): NO difuminar, NO
+   * upscalear con IA y trabajar a resolución nativa. Lo usa la CONSOLIDACIÓN de ediciones
+   * de zona/objeto al vector (re-trazar el raster editado con paleta fija, fiel 1:1).
+   */
+  assumeFlat?: boolean
 }
 
 interface Color {
@@ -316,7 +322,7 @@ export async function vectorizeStep(
   // un dibujo) y el trazo sale sucio / con colores mal asignados. Cacheado en disco por hash:
   // editar la paleta NO vuelve a upscalear (re-vectorizado rápido).
   const meta0 = await sharp(buf).metadata()
-  if (Math.max(meta0.width ?? 512, meta0.height ?? 512) < 700 && isSrDownloaded()) {
+  if (!opts.assumeFlat && Math.max(meta0.width ?? 512, meta0.height ?? 512) < 700 && isSrDownloaded()) {
     try {
       const hash = createHash('md5').update(buf).digest('hex').slice(0, 16)
       const cdir = path.join(os.tmpdir(), 'sajaru-vec-up')
@@ -336,7 +342,7 @@ export async function vectorizeStep(
   }
   const meta = await sharp(buf).metadata()
   const maxDim = Math.max(meta.width ?? 512, meta.height ?? 512)
-  const target = Math.min(1536, Math.max(1280, maxDim))
+  const target = opts.assumeFlat ? Math.min(2048, maxDim) : Math.min(1536, Math.max(1280, maxDim))
   const palMax = Math.max(2, Math.min(24, Math.round(opts.colors)))
 
   // Reducir ruido: filtro de MEDIANA (quita grano / textura "distressed" preservando bordes)
@@ -627,7 +633,7 @@ export async function vectorizeStep(
   // limpio = bordes nítidos Y no es low-res (un logo de 120px upscaleado igual
   // necesita blur aunque su fracción AA sea baja: su escalera quedó estirada).
   const lowRes = maxDim < 600
-  const clean = aaFraction < 0.12 && !lowRes
+  const clean = opts.assumeFlat || (aaFraction < 0.12 && !lowRes)
 
   // blur adaptativo
   const scale = target / maxDim
@@ -721,6 +727,7 @@ export async function vectorizeCommand(
     denoise?: number
     mergeThin?: boolean
     keepBackground?: boolean
+    assumeFlat?: boolean
   },
   ctx: Ctx
 ): Promise<{
@@ -772,7 +779,7 @@ export async function vectorizeCommand(
     buffer = await sharp(Buffer.from(svg), { density: 300 }).resize(size, size, { fit: 'inside' }).png().toBuffer()
     ctx.progress('vectorize', 1)
   } else {
-    const r = await vectorizeStep(buf, { colors, size, edit: opts.edit, denoise: opts.denoise, mergeThin: opts.mergeThin, keepBackground: opts.keepBackground }, ctx)
+    const r = await vectorizeStep(buf, { colors, size, edit: opts.edit, denoise: opts.denoise, mergeThin: opts.mergeThin, keepBackground: opts.keepBackground, assumeFlat: opts.assumeFlat }, ctx)
     svg = r.svg
     buffer = r.buffer
     palette = r.palette

@@ -329,6 +329,7 @@ program
   .option('--denoise <n>', 'reducir ruido 0..100 (mediana antes de detectar la paleta)', num, 0)
   .option('--no-merge-thin', 'no fundir colores-franja finos al color vecino')
   .option('--keep-background', 'NO quitar el fondo uniforme del borde (vectorizar el diseño completo)')
+  .option('--assume-flat', 'la entrada ya es plana (consolidación): sin blur ni upscale, resolución nativa')
   .addOption(new Option('--method <m>', 'local (Potrace) o recraft (IA premium)').choices(['local', 'recraft']).default('local'))
   .action((opts: Opts, cmd: Command) =>
     runCmd('vectorize', cmd, (ctx) =>
@@ -342,7 +343,8 @@ program
           edit: opts.edit ? JSON.parse(String(opts.edit)) : undefined,
           denoise: Number(opts.denoise),
           mergeThin: opts.mergeThin,
-          keepBackground: Boolean(opts.keepBackground)
+          keepBackground: Boolean(opts.keepBackground),
+          assumeFlat: Boolean(opts.assumeFlat)
         },
         ctx
       )
