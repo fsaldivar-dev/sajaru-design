@@ -101,14 +101,21 @@ export interface VectorizeConfig {
 /** Modo de la herramienta de ZONA del vectorizado (rect sobre el raster del resultado). */
 export type VectorAreaMode = 'fill' | 'erase' | 'recolor'
 
-/** Grupo con nombre del diseñador ("Letras", "Gorro"…): objetos identificados por sus
- *  semillas en coords NORMALIZADAS (0..1) — sobreviven re-trazados y cambios de tamaño. */
+/** Grupo con nombre del diseñador ("Letras", "Gorro"…). Dos sabores:
+ *  - por SEMILLAS (selección de clics): coords normalizadas 0..1 que se re-floodean sobre
+ *    el raster vigente — siguen al objeto aunque lo recolorees.
+ *  - por MÁSCARA (selección con marcos/restas): PNG con alfa>=128 en lo seleccionado, a
+ *    las dimensiones del raster donde se creó — el sidecar la re-escala al vigente. */
 export interface VectorGroup {
   id: string
   name: string
   /** Último color aplicado al grupo (swatch del panel). */
   color?: string
   seeds: Array<{ px: number; py: number }>
+  /** Máscara de la selección (solo grupos creados con marcos/restas). */
+  maskPng?: ArrayBuffer
+  maskW?: number
+  maskH?: number
 }
 
 /** Config que la mini app Mejorar manda al comando `enhance` del sidecar. */

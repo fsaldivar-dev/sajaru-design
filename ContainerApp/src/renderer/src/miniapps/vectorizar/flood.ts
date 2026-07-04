@@ -289,6 +289,50 @@ export function buildOverlayFromMask(w: number, h: number, mask: Uint8Array): HT
   return c
 }
 
+/** Decodifica un PNG de máscara (alfa>=128 = seleccionado) y lo escala a `w×h` (nearest).
+ *  Devuelve un pseudo-componente para resaltar grupos guardados por máscara. */
+export async function pngBytesToComponent(bytes: ArrayBuffer, w: number, h: number): Promise<Component | null> {
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'image/png' }))
+  try {
+    const img = new Image()
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve()
+      img.onerror = () => reject(new Error('máscara ilegible'))
+      img.src = url
+    })
+    const c = document.createElement('canvas')
+    c.width = w
+    c.height = h
+    const g = c.getContext('2d', { willReadFrequently: true })
+    if (!g) return null
+    g.imageSmoothingEnabled = false
+    g.drawImage(img, 0, 0, w, h)
+    const { data } = g.getImageData(0, 0, w, h)
+    const mask = new Uint8Array(w * h)
+    let area = 0
+    let seed: { x: number; y: number } | null = null
+    let x0 = w, y0 = h, x1 = 0, y1 = 0
+    for (let p = 0; p < w * h; p++) {
+      if (data[p * 4 + 3] < 128) continue
+      mask[p] = 1
+      area++
+      const x = p % w
+      const y = (p / w) | 0
+      if (!seed) seed = { x, y }
+      if (x < x0) x0 = x
+      if (x > x1) x1 = x
+      if (y < y0) y0 = y
+      if (y > y1) y1 = y
+    }
+    if (!area || !seed) return null
+    return { seed, hex: '#3898ff', mask, bbox: { x0, y0, x1, y1 }, area }
+  } catch {
+    return null
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
+
 /** La máscara como PNG (alfa 255 en lo seleccionado) para mandar al sidecar (--mask). */
 export async function maskToPngBytes(w: number, h: number, mask: Uint8Array): Promise<ArrayBuffer> {
   const c = document.createElement('canvas')

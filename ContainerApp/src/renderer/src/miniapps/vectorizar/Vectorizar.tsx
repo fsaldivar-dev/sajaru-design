@@ -26,6 +26,7 @@ import {
   loadRaster,
   marqueeMask,
   maskToPngBytes,
+  pngBytesToComponent,
   rectMask,
   type Component,
   type Raster
@@ -204,6 +205,18 @@ export default function Vectorizar(): React.JSX.Element {
     if (cached) {
       setHoverComps(cached)
       return
+    }
+    if (g.maskPng && g.maskW && g.maskH) {
+      // Grupo por máscara: decodificar y escalar al raster vigente (async, cacheado).
+      let dead = false
+      void pngBytesToComponent(g.maskPng, raster.w, raster.h).then((comp) => {
+        if (dead || !comp) return
+        hoverCacheRef.current.set(g.id, [comp])
+        setHoverComps([comp])
+      })
+      return () => {
+        dead = true
+      }
     }
     const comps = g.seeds
       .map((s) => floodComponent(raster, s.px * raster.w, s.py * raster.h))
@@ -663,23 +676,30 @@ export default function Vectorizar(): React.JSX.Element {
     if (!raster) return
     const eff = effectiveMask(raster.w, raster.h, selComps, selSubs)
     if (!eff) return
-    clearTimeout(debounceRef.current)
     const bytes = await maskToPngBytes(raster.w, raster.h, eff.mask)
+    await runMaskEdit(bytes, mode, to)
+  }
+
+  /** Núcleo de la edición por MÁSCARA (selección libre o grupo guardado por marco): el
+   *  sidecar edita exactamente esos píxeles (re-escala la máscara al raster vigente). */
+  async function runMaskEdit(bytes: ArrayBuffer, mode: 'erase' | 'recolor', to?: string): Promise<boolean> {
+    clearTimeout(debounceRef.current)
     const token = ++tokenRef.current
     setError(null)
     setProgress({ value: 0, message: mode === 'erase' ? 'Borrando la selección…' : 'Recoloreando la selección…' })
     const r = await window.api.vectorize.maskEdit(bytes, mode, to)
-    if (token !== tokenRef.current) return
+    if (token !== tokenRef.current) return false
     setProgress(null)
     if (!r.ok) {
       setError(r.error ?? { code: 'E_AREA', message: 'No se pudo editar la selección' })
-      return
+      return false
     }
     if (r.bytes) {
       applyFillResult({ bytes: r.bytes })
       setZones((z) => z + 1)
       setUhist((h) => ({ undo: [...h.undo, { kind: 'fill', n: 1 }], redo: [] }))
     }
+    return true
   }
 
   /** "Emparejar": la zona de la marquesina se funde a su color dominante (tapa suciedad).
@@ -770,29 +790,56 @@ export default function Vectorizar(): React.JSX.Element {
     setActionColor(comp.hex)
   }
 
-  /** Guarda la selección actual como GRUPO con nombre (semillas normalizadas → main).
-   *  Solo para selecciones de componentes puros: una marquesina o una resta no son
-   *  reconstruibles por semillas tras un re-trazado. */
-  function saveGroup(): void {
+  /** Guarda la selección actual como GRUPO con nombre. Selecciones de clics → semillas
+   *  normalizadas (se re-floodean: siguen al objeto). Selecciones con marcos/restas →
+   *  MÁSCARA (el sidecar la re-escala al raster vigente al aplicar). */
+  async function saveGroup(): Promise<void> {
     const raster = rasterRef.current
-    if (!raster || !selComps.length || !pureComps) return
-    const g: VectorGroup = {
-      id: `g${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`,
-      name: `Grupo ${groups.length + 1}`,
-      color: selComps[0].hex,
-      seeds: selComps.map((c) => ({ px: c.seed.x / raster.w, py: c.seed.y / raster.h }))
+    if (!raster || !selComps.length) return
+    const id = `g${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`
+    let g: VectorGroup
+    if (pureComps) {
+      g = {
+        id,
+        name: `Grupo ${groups.length + 1}`,
+        color: selComps[0].hex,
+        seeds: selComps.map((c) => ({ px: c.seed.x / raster.w, py: c.seed.y / raster.h }))
+      }
+    } else {
+      const eff = effectiveMask(raster.w, raster.h, selComps, selSubs)
+      if (!eff) return
+      const bytes = await maskToPngBytes(raster.w, raster.h, eff.mask)
+      g = {
+        id,
+        name: `Grupo ${groups.length + 1}`,
+        color: selComps[0].hex,
+        seeds: [],
+        maskPng: bytes,
+        maskW: raster.w,
+        maskH: raster.h
+      }
     }
     const next = [...groups, g]
     setGroups(next)
     void window.api.vectorize.groupsSet(next)
     setSelComps([])
+    setSelSubs([])
   }
 
-  /** Recolorea TODO el grupo tocando su swatch (batch de N puntos, un paso del historial).
-   *  Las semillas cuyos objetos ya no existen (los borraste) se saltean con aviso. */
+  /** Recolorea TODO el grupo tocando su swatch (un paso del historial). Grupos por máscara
+   *  van directo al sidecar (que re-escala la máscara al raster vigente); por semillas se
+   *  re-floodean, salteando con aviso las que ya no existen (las borraste). */
   async function recolorGroup(g: VectorGroup, hex: string): Promise<void> {
     const raster = rasterRef.current
     if (!raster || busy) return
+    if (g.maskPng) {
+      const ok = await runMaskEdit(g.maskPng, 'recolor', hex)
+      if (!ok) return
+      const next = groups.map((x) => (x.id === g.id ? { ...x, color: hex } : x))
+      setGroups(next)
+      void window.api.vectorize.groupsSet(next)
+      return
+    }
     const alive = g.seeds
       .map((s) => floodComponent(raster, s.px * raster.w, s.py * raster.h))
       .filter((c): c is Component => c !== null)
@@ -1091,14 +1138,9 @@ export default function Vectorizar(): React.JSX.Element {
                   )}
                   <button
                     type="button"
-                    disabled={!pureComps}
-                    onClick={saveGroup}
-                    title={
-                      pureComps
-                        ? 'Guardá esta selección con nombre (Letras, Gorro…) para recolorearla toda junta cuando quieras'
-                        : 'Los grupos se guardan desde selecciones de clics (las marquesinas y restas no sobreviven re-trazados)'
-                    }
-                    className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40"
+                    onClick={() => void saveGroup()}
+                    title="Guardá esta selección con nombre (Letras, Gorro…) para recolorearla toda junta cuando quieras"
+                    className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition hover:text-foreground"
                   >
                     Guardar como grupo
                   </button>
@@ -1404,7 +1446,7 @@ export default function Vectorizar(): React.JSX.Element {
                       className="w-0 min-w-0 flex-1 rounded-md border border-transparent bg-transparent px-1.5 py-1 text-xs font-medium outline-none transition focus:border-border"
                     />
                     <span className="shrink-0 text-[11px] text-muted-foreground">
-                      {g.seeds.length} obj
+                      {g.maskPng ? 'marco' : `${g.seeds.length} obj`}
                     </span>
                     <button
                       type="button"

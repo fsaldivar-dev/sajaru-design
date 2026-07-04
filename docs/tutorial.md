@@ -177,7 +177,7 @@ La **barra de estado** (abajo del lienzo) siempre muestra el zoom y qué hace la
 
 Para no re-seleccionar lo mismo cada vez:
 
-1. Seleccioná los objetos (clic + shift+clic) y tocá **Guardar como grupo**.
+1. Armá la selección como quieras (clics, marcos, restas con ⌥) y tocá **Guardar como grupo**.
 2. En el panel **Grupos** (a la derecha): escribí el nombre real ("Letras", "Gorro", "Barba", "Playera").
 3. **Tocá el swatch del grupo** y se recolorea **todo el grupo de una**. Pasá el mouse por la fila y se resalta en el lienzo.
 4. Los grupos sobreviven aunque cambies colores o re-traces. Eliminarlo no toca el diseño (es solo la selección guardada).
