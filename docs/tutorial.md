@@ -140,7 +140,7 @@ El recorte pasa **directo** a esa herramienta, ya cargado, sin tocar el disco. P
 
 2. La app vectoriza **sola** apenas cargás la imagen (no hay que apretar ningún botón "Vectorizar": se rehace solo cada vez que cambiás algo). Mientras trabaja vas a ver *"Vectorizando…"*.
 
-3. Elegí el modo arriba:
+3. Elegí el **Motor** en el panel derecho (Ajustes):
    - **Local** — Potrace por capas: gratis y privado. Anda bien para la mayoría de los logos.
    - **IA Premium** — Recraft (IA). Da curvas muy limpias pero consume saldo y necesita API key.
 
@@ -148,32 +148,58 @@ El recorte pasa **directo** a esa herramienta, ya cargado, sin tocar el disco. P
 
 4. Ajustá el control **Colores** (un deslizador de 2 a 24). Menos colores = resultado más limpio y plano; más colores = más detalle. **Para logos planos, pocos colores suelen verse mejor.** Movelo y mirá cómo cambia el preview.
 
-5. Del lado del preview tenés el panel de **Capas** (una por color). Podés mostrar/ocultar una capa, aislarla para verla sola, o cambiarle el color haciendo clic en su cuadrito. **Ojo:** cambiar el color de una capa cambia **TODOS** los objetos de ese color en el diseño.
+5. Del lado del preview tenés el panel de **Capas** (una por color). Podés mostrar/ocultar una capa, verla sola, o cambiarle el color haciendo clic en su cuadrito. **Ojo:** cambiar el color de una capa cambia **TODOS** los objetos de ese color en el diseño.
 
 6. Si tu diseño trae fondo y querés el flujo clásico de vectorizado ("vectorizo todo y después borro lo que sobra"), activá **Conservar fondo**: el fondo y los blancos quedan como capas (el blanco es tinta imprimible en DTF).
 
-### Editar UN objeto (clic directo)
+### Moverte por el lienzo
 
-¿Querés cambiar el color de **una** letra, **un** escudo o **el** gorro — sin tocar el resto de ese color? No uses la capa: **hacé clic sobre el objeto en el preview**.
+Igual que en Figma o Illustrator:
 
-1. **Clic sobre el objeto.** Aparece un menú chiquito pegado al clic, mostrando el color que detectó.
-2. Elegí el color nuevo en el cuadrito y tocá **Recolorear** — o tocá **Borrar** para hacerlo transparente.
-3. Solo cambia **ese** objeto (la pieza conectada que clickeaste), aunque haya veinte más del mismo color. Estilo Illustrator.
+- **Scroll** (dos dedos en el trackpad) = **desplazar** la imagen.
+- **Pinch** o **⌘ + scroll** = **zoom hacia el cursor** (también están los botones − / + abajo).
+- **Espacio + arrastrar** = manito para moverte, en cualquier modo.
+- **Doble clic** en el vacío = ajustar a la ventana.
+
+La **barra de estado** (abajo del lienzo) siempre muestra el zoom y qué hace la herramienta activa. Para revisar bordes antes de exportar: pinch para acercarte y scroll para recorrer el contorno.
+
+### Seleccionar y editar objetos (clic)
+
+¿Querés cambiar el color de **una** letra, **un** escudo o **el** gorro — sin tocar el resto de ese color? No uses la capa: **seleccionalo en el preview**.
+
+1. **Clic sobre el objeto** → se **resalta en celeste** (eso es lo que está seleccionado, ni más ni menos).
+2. **Shift+clic** suma más objetos a la selección (o quita uno ya seleccionado). **Escape** o clic en el vacío deselecciona.
+3. En la **barra de acciones** que aparece arriba del lienzo: elegí el color y tocá **Recolorear**, o tocá **Borrar** (también con la tecla **Supr**).
+4. Solo cambian los objetos **seleccionados** (las piezas conectadas que clickeaste), aunque haya veinte más del mismo color. Estilo Illustrator.
+
+### Grupos: "esto son las letras, esto es el gorro"
+
+Para no re-seleccionar lo mismo cada vez:
+
+1. Seleccioná los objetos (clic + shift+clic) y tocá **Guardar como grupo**.
+2. En el panel **Grupos** (a la derecha): escribí el nombre real ("Letras", "Gorro", "Barba", "Playera").
+3. **Tocá el swatch del grupo** y se recolorea **todo el grupo de una**. Pasá el mouse por la fila y se resalta en el lienzo.
+4. Los grupos sobreviven aunque cambies colores o re-traces. Eliminarlo no toca el diseño (es solo la selección guardada).
 
 ### Limpiar zonas y bordes (rectángulo)
 
 Si quedaron manchitas o líneas raras en los bordes (típico cuando el fondo original tenía un color parecido):
 
-1. Activá **Editar zona** y elegí el modo: **Fundir** (tapa la zona con su color predominante), **Borrar** (quita el color predominante, útil para restos de fondo) o **Recolorear**.
-2. **Arrastrá un rectángulo** sobre la zona.
-3. Repetí en cada zona sucia. Si te pasaste, usá **Deshacer zonas**. Cuando termines, tocá **Listo**.
-4. Para volver la paleta al estado inicial, está **Restaurar**; y siempre tenés **Deshacer** / **Rehacer**.
+1. Activá **Editar zona** y elegí el modo: **Emparejar** (tapa la zona con su color predominante), **Borrar** (quita el color predominante, útil para restos de fondo) o **Recolorear**.
+2. **Arrastrá un rectángulo** sobre la zona — vale cualquier franja, aunque sea finita (2 px de alto). Con **espacio** te movés sin salir del modo.
+3. Repetí en cada zona sucia. Cuando termines, tocá **Listo**.
 
-> Todas estas ediciones (objeto y zona) **quedan grabadas en el vector**: el SVG/PDF/EPS que exportás es exactamente lo que ves.
+### Deshacer (de verdad)
+
+- **⌘Z** deshace **la última acción**, sea de capas, de objetos o de zona — de a un paso (recolorear un grupo entero = un paso). **⌘⇧Z** rehace. También tenés las flechas ↶ ↷ arriba.
+- **Quitar ediciones (N)** borra TODAS las ediciones raster de una (las de capas quedan).
+- **Restaurar** (en Capas) vuelve la paleta al estado inicial.
+
+> Con motor **Local**, todas estas ediciones **quedan grabadas en el vector**: el SVG/PDF/EPS que exportás es exactamente lo que ves. Con **IA Premium** las curvas pagas no se re-trazan, así que la edición de objetos/zonas está deshabilitada (las capas sí se editan, sin gastar créditos).
 
 ### Exportar el vector
 
-Arriba tenés los botones de exportación. Elegí según para qué lo necesites:
+Arriba a la derecha está el botón **Exportar** — un solo menú con todo:
 
 - **Guardar SVG** — vector real, escalable a cualquier tamaño (el formato estrella).
 - **PDF** — vectorial, ideal para imprenta / plotter.

@@ -259,16 +259,21 @@ La herramienta te tira **sugerencias** según lo que detecta (por ejemplo, te pr
    - **Cantidad de colores** de la paleta (hasta 24).
    - **Reducción de ruido**.
    - **Conservar fondo**: vectoriza TODO (fondo incluido) para el flujo "vectorizo todo y después elimino lo que sobra". Los blancos quedan como capa imprimible (tinta blanca DTF).
-4. **Editá la paleta en vivo** (panel **Capas**): cambiar el color de una capa cambia **todos** los objetos de ese color; también podés ocultar capas o bajarlas por separado.
-5. **Editar UN objeto** (estilo Illustrator): hacé **clic directo sobre el objeto** en el lienzo (una letra, el gorro, un escudo). Aparece un menú con el color detectado y dos acciones — **Recolorear** (con el color que elijas) o **Borrar** (→ transparente). Solo afecta a **ese** objeto, aunque haya otros del mismo color.
-6. **Editar zona** (rectángulo): arrastrá un área y elegí **Fundir** (todo al color predominante, para tapar suciedad), **Borrar** (quita el color predominante de la zona) o **Recolorear** (cambia el predominante de la zona).
-7. Exportá. Las ediciones de objeto/zona **quedan en el vector** (el SVG/PDF/EPS exporta exactamente lo que ves).
+4. **Navegá el lienzo** como en Figma/Illustrator: **scroll** (dos dedos) = desplazar · **pinch** o **⌘ + scroll** = zoom hacia el cursor · **espacio + arrastrar** = mano (en cualquier modo) · **doble clic** = ajustar a la ventana. La barra de estado (abajo del lienzo) muestra el zoom y la ayuda de la herramienta activa.
+5. **Seleccioná y editá objetos** (estilo Illustrator): **clic sobre un objeto** (una letra, el gorro, un escudo) y **se resalta en celeste**; **shift+clic** suma o quita objetos; **Escape** o clic en vacío deselecciona. Con la selección activa aparece la **barra de acciones**: **Recolorear** (con el color que elijas), **Borrar** (tecla Supr también) o **Guardar como grupo**. Solo afecta a los objetos seleccionados, aunque haya otros del mismo color.
+6. **Grupos con nombre**: guardá una selección como grupo ("Letras", "Gorro", "Barba"…) desde la barra de acciones. En el panel **Grupos**: tocá el **swatch** y se recolorea **todo el grupo** de una; pasá el mouse por la fila y se resalta en el lienzo; renombralo escribiendo sobre el nombre. Los grupos sobreviven re-trazados.
+7. **Editá la paleta** (panel **Capas**): cambiar el color de una capa cambia **todos** los objetos de ese color; también podés ocultar capas, verlas solas o bajarlas por separado.
+8. **Editar zona** (rectángulo): activá **Editar zona**, arrastrá un área y elegí **Emparejar** (todo al color predominante, para tapar suciedad), **Borrar** (quita el color predominante de la zona) o **Recolorear** (cambia el predominante). Sirve cualquier franja, aunque sea de 2 px de alto. Con **espacio** te movés sin salir del modo.
+9. **Deshacer de verdad**: **⌘Z** deshace LA última acción — sea de capas, de objetos o de zona — de a un paso (un grupo entero cuenta como un paso). **⌘⇧Z** rehace. **Quitar ediciones (N)** borra todas las ediciones raster de una.
+10. Exportá con el botón **Exportar** (SVG, PDF, EPS, PNG o copiar). Con motor **Local**, las ediciones de objeto/zona **quedan en el vector** (el SVG/PDF/EPS exporta exactamente lo que ves).
 
 **Formatos de salida:** **SVG**, **PDF**, **EPS** o **PNG**. También podés **bajar las capas por color** (una por cada color de la paleta).
 
+**Nota sobre IA Premium (Recraft):** las curvas premium no se re-trazan, así que la edición de **objetos y zonas** está disponible solo con motor **Local** (la app lo indica). Con Premium podés editar **capas** (recolorear/ocultar) sin gastar créditos extra.
+
 **Tips:**
 - Menos colores = vector más limpio y liviano. Empezá bajo y subí solo si perdés detalle importante.
-- ¿Capa (todos) o clic (uno)? Para recolorear **todo un color** usá la capa; para **un solo elemento** (una letra, un parche) hacé clic sobre él.
+- ¿Capa (todos) o clic (uno)? Para recolorear **todo un color** usá la capa; para **un elemento o un grupo** (letras, gorro, barba) seleccionalo con clic / shift+clic.
 - Si el logo está sobre un fondo sólido, el vector queda mucho más prolijo que partiendo de una foto con fondo complejo (combinalo con **Quitar fondo** primero).
 - ¿Necesitás separar por tintas o capas? Bajá las **capas por color**.
 

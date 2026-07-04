@@ -136,7 +136,10 @@ export default function Vectorizar(): React.JSX.Element {
 
   // Grupos guardados en el main (si volvés a la mini app, siguen).
   useEffect(() => {
-    void window.api.vectorize.groupsGet().then(setGroups, () => undefined)
+    void window.api.vectorize.groupsGet().then(
+      (gs) => setGroups(Array.isArray(gs) ? gs : []),
+      () => undefined
+    )
   }, [])
 
   // Resaltado de grupo al pasar el mouse por su fila (flood cacheado por grupo/resultado).
