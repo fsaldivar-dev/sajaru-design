@@ -119,10 +119,13 @@ export function CompareView({
     }
   }, [after])
 
+  // La vista se resetea SOLO con imagen nueva. Cada edición produce un blob URL nuevo en
+  // `after` — si esto dependiera de `after`, cada recolor/⌘Z te devolvería a 100% centrado
+  // y el loop profesional "zoom → editar → verificar" moriría en cada vuelta.
   useEffect(() => {
     setScale(1)
     setOff({ x: 0, y: 0 })
-  }, [before, after])
+  }, [before])
 
   useEffect(() => {
     const view = viewRef.current
@@ -312,11 +315,15 @@ export function CompareView({
     onSelectRect({ x, y, w: Math.max(1, w), h: Math.max(1, h) })
   }
 
-  /** Dispara el pick (clic sin arrastre) si cae sobre un píxel opaco del resultado. */
+  /** Dispara el pick (clic sin arrastre). Fuera de la imagen (checkerboard) también dispara,
+   *  con hex null — el "clic en el vacío" más natural para deseleccionar. */
   const firePick = (vx: number, vy: number, additive: boolean): void => {
     if (!onPickPoint || busy) return
     const p = viewToImg(vx, vy)
-    if (!p) return
+    if (!p) {
+      onPickPoint({ x: 0, y: 0, vx, vy, hex: null, additive })
+      return
+    }
     const hex = sampleHex(p.x, p.y)
     onPickPoint({ x: p.x, y: p.y, vx, vy, hex, additive })
   }
@@ -458,8 +465,14 @@ export function CompareView({
         </button>
       )}
 
-      {/* Barra de estado: zoom + LA línea de ayuda contextual (un solo lugar, sin truncar). */}
-      <div className="absolute inset-x-0 bottom-0 z-20 flex items-center justify-between gap-3 border-t border-border bg-background/85 px-2 py-1 backdrop-blur">
+      {/* Barra de estado: zoom + LA línea de ayuda contextual (un solo lugar, sin truncar).
+          stopPropagation: sin esto, el pointerdown burbujea al lienzo, que captura el puntero
+          (pan/rect) y el click de los botones −/%/＋ muere justo cuando estás zoomeado. */}
+      <div
+        className="absolute inset-x-0 bottom-0 z-20 flex items-center justify-between gap-3 border-t border-border bg-background/85 px-2 py-1 backdrop-blur"
+        onPointerDown={(e) => e.stopPropagation()}
+        onDoubleClick={(e) => e.stopPropagation()}
+      >
         <div className="flex shrink-0 items-center gap-0.5">
           <button type="button" aria-label="Alejar" onClick={() => zoom(0.8)} className="flex h-6 w-6 items-center justify-center rounded-md hover:bg-muted">
             <Minus className="h-3.5 w-3.5" />

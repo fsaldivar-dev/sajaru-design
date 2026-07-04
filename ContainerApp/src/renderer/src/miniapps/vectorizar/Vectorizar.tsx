@@ -106,24 +106,40 @@ export default function Vectorizar(): React.JSX.Element {
     })
   }, [])
 
-  // Raster del resultado para el flood de selección. Al cambiar el resultado, la selección
-  // y el caché de resaltado de grupos quedan obsoletos.
+  // Raster del resultado para el flood de selección. Al cambiar el resultado, el caché de
+  // grupos queda obsoleto — pero la SELECCIÓN se REVIVE re-floodeando sus semillas sobre el
+  // raster nuevo (normalizadas contra el viejo, por si cambió el Tamaño): recolorear no te
+  // roba la selección ni el lugar, como en Illustrator. Semillas borradas mueren solas.
   useEffect(() => {
+    const prev = rasterRef.current
+    const seeds = prev ? selComps.map((c) => ({ px: c.seed.x / prev.w, py: c.seed.y / prev.h })) : []
     rasterRef.current = null
     hoverCacheRef.current.clear()
-    setSelComps([])
     setHoverComps([])
-    if (!result?.url) return
+    if (!result?.url) {
+      setSelComps([])
+      return
+    }
     let dead = false
     void loadRaster(result.url).then(
       (r) => {
-        if (!dead) rasterRef.current = r
+        if (dead) return
+        rasterRef.current = r
+        if (seeds.length) {
+          const revived = seeds
+            .map((s) => floodComponent(r, s.px * r.w, s.py * r.h))
+            .filter((c): c is Component => c !== null)
+          setSelComps(revived)
+        } else if (!prev) {
+          setSelComps([])
+        }
       },
       () => undefined
     )
     return () => {
       dead = true
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [result?.url])
 
   // Cambiar a IA Premium apaga las herramientas raster (ver `canEditRaster`).
@@ -190,7 +206,9 @@ export default function Vectorizar(): React.JSX.Element {
     setProgress({ value: 0, message: 'Vectorizando…' })
 
     const r = await window.api.vectorize.process(cfg)
-    if (r.ok && cfg.method === 'recraft') recordUsage(OP_COST.vectorize)
+    // Solo cuenta créditos cuando REALMENTE llama a la API: editar capas en Premium usa
+    // svg-edit local (el main no toca Recraft) y no gasta.
+    if (r.ok && cfg.method === 'recraft' && !(cfg.edit && cfg.edit.length)) recordUsage(OP_COST.vectorize)
     if (token !== tokenRef.current) return
 
     setProgress(null)
@@ -253,6 +271,11 @@ export default function Vectorizar(): React.JSX.Element {
       t instanceof HTMLElement && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)
     const onKey = (e: KeyboardEvent): void => {
       if (!source) return
+      // Tipeando (renombrar un grupo, etc.): ⌘Z es del campo, no del diseño; Escape blurea.
+      if (typing(e.target)) {
+        if (e.key === 'Escape') (e.target as HTMLElement).blur()
+        return
+      }
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'z') {
         e.preventDefault()
         if (e.shiftKey) void redoUnified()
@@ -260,12 +283,13 @@ export default function Vectorizar(): React.JSX.Element {
         return
       }
       if (e.key === 'Escape') {
-        setExportOpen(false)
-        if (selComps.length) setSelComps([])
+        // De a una capa por pulsación (estándar): menú → selección → modo zona.
+        if (exportOpen) setExportOpen(false)
+        else if (selComps.length) setSelComps([])
         else if (selecting) setSelecting(false)
         return
       }
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selComps.length && !busy && !typing(e.target)) {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selComps.length && !busy) {
         e.preventDefault()
         void applySelection('erase')
       }
@@ -273,7 +297,7 @@ export default function Vectorizar(): React.JSX.Element {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hist, uhist, source, selComps, selecting, busy, actionColor])
+  }, [hist, uhist, source, selComps, selecting, busy, actionColor, exportOpen])
 
   function handleFiles(files: FileList | null): void {
     const f = files?.[0]
@@ -348,6 +372,11 @@ export default function Vectorizar(): React.JSX.Element {
     if (busy) return
     const top = uhist.undo[uhist.undo.length - 1]
     if (!top) return
+    if (top.kind === 'fill' && !canEditRaster) {
+      setError({ code: 'E_ENGINE', message: 'Ese paso es una edición de objetos/zonas: volvé al motor Local para deshacerlo' })
+      return
+    }
+    clearTimeout(debounceRef.current) // que no arranque un re-trazado en paralelo
     setUhist((h) => ({ undo: h.undo.slice(0, -1), redo: [...h.redo, top] }))
     if (top.kind === 'palette') {
       undoPalette()
@@ -360,6 +389,8 @@ export default function Vectorizar(): React.JSX.Element {
     if (token !== tokenRef.current) return
     setProgress(null)
     if (!r.ok) {
+      // El main no lo aplicó: devolvé el paso al historial (sin esto quedan desincronizados).
+      setUhist((h) => ({ undo: [...h.undo, top], redo: h.redo.slice(0, -1) }))
       setError(r.error ?? { code: 'E_UNDO', message: 'No se pudo deshacer' })
       return
     }
@@ -371,6 +402,11 @@ export default function Vectorizar(): React.JSX.Element {
     if (busy) return
     const top = uhist.redo[uhist.redo.length - 1]
     if (!top) return
+    if (top.kind === 'fill' && !canEditRaster) {
+      setError({ code: 'E_ENGINE', message: 'Ese paso es una edición de objetos/zonas: volvé al motor Local para rehacerlo' })
+      return
+    }
+    clearTimeout(debounceRef.current)
     setUhist((h) => ({ undo: [...h.undo, top], redo: h.redo.slice(0, -1) }))
     if (top.kind === 'palette') {
       redoPalette()
@@ -383,6 +419,7 @@ export default function Vectorizar(): React.JSX.Element {
     if (token !== tokenRef.current) return
     setProgress(null)
     if (!r.ok) {
+      setUhist((h) => ({ undo: h.undo.slice(0, -1), redo: [...h.redo, top] }))
       setError(r.error ?? { code: 'E_REDO', message: 'No se pudo rehacer' })
       return
     }
@@ -514,6 +551,7 @@ export default function Vectorizar(): React.JSX.Element {
    *  elegido (raster). La edición queda guardada en el main y se re-aplica si re-vectorizás
    *  (tocar capas/controles no la borra). */
   async function onSelectRect(rect: { x: number; y: number; w: number; h: number }): Promise<void> {
+    clearTimeout(debounceRef.current) // sin re-trazado en paralelo con la edición
     const token = ++tokenRef.current
     setError(null)
     const msg =
@@ -538,12 +576,13 @@ export default function Vectorizar(): React.JSX.Element {
   }
 
   /** Aplica borrar/recolorear a TODA la selección (N componentes conectados) en un solo
-   *  paso: N puntos al sidecar, UNA consolidación, UN paso del historial. */
+   *  paso: N puntos al sidecar, UNA consolidación, UN paso del historial. La selección NO
+   *  se limpia: al llegar el resultado se re-floodean las mismas semillas (así "probar dos
+   *  colores en la misma letra" es recolorear dos veces, sin re-clickear). */
   async function applySelection(mode: 'erase' | 'recolor'): Promise<void> {
     if (!selComps.length || busy) return
     const points = selComps.map((c) => c.seed)
     const to = mode === 'recolor' ? actionColor : undefined
-    setSelComps([])
     await runObjectEditPoints(points, mode, to)
   }
 
@@ -553,6 +592,7 @@ export default function Vectorizar(): React.JSX.Element {
     mode: 'erase' | 'recolor',
     to?: string
   ): Promise<boolean> {
+    clearTimeout(debounceRef.current) // sin re-trazado en paralelo con la edición
     const token = ++tokenRef.current
     setError(null)
     const what = points.length === 1 ? 'el objeto' : `${points.length} objetos`
@@ -620,12 +660,24 @@ export default function Vectorizar(): React.JSX.Element {
     setSelComps([])
   }
 
-  /** Recolorea TODO el grupo tocando su swatch (batch de N puntos, un paso del historial). */
+  /** Recolorea TODO el grupo tocando su swatch (batch de N puntos, un paso del historial).
+   *  Las semillas cuyos objetos ya no existen (los borraste) se saltean con aviso. */
   async function recolorGroup(g: VectorGroup, hex: string): Promise<void> {
     const raster = rasterRef.current
     if (!raster || busy) return
-    const points = g.seeds.map((s) => ({ x: s.px * raster.w, y: s.py * raster.h }))
-    const ok = await runObjectEditPoints(points, 'recolor', hex)
+    const alive = g.seeds
+      .map((s) => floodComponent(raster, s.px * raster.w, s.py * raster.h))
+      .filter((c): c is Component => c !== null)
+    if (!alive.length) {
+      setError({ code: 'E_GROUP', message: `"${g.name}" ya no tiene objetos en el diseño (¿los borraste?)` })
+      return
+    }
+    if (alive.length < g.seeds.length) {
+      setLayerNote(`"${g.name}": ${alive.length} de ${g.seeds.length} objetos siguen en el diseño; recoloreo esos.`)
+      clearTimeout(layerNoteTimer.current)
+      layerNoteTimer.current = setTimeout(() => setLayerNote(null), 5000)
+    }
+    const ok = await runObjectEditPoints(alive.map((c) => c.seed), 'recolor', hex)
     if (!ok) return
     const next = groups.map((x) => (x.id === g.id ? { ...x, color: hex } : x))
     setGroups(next)
@@ -649,13 +701,21 @@ export default function Vectorizar(): React.JSX.Element {
   }
 
   /** Quita TODAS las ediciones raster y re-vectoriza limpio (los grupos quedan: son
-   *  selecciones guardadas, no ediciones). */
+   *  selecciones guardadas, no ediciones). Es lo único sin vuelta atrás → confirma. */
   function clearZones(): void {
+    if (!window.confirm(`¿Quitar las ${zones} ediciones de objetos/zonas? Esto no tiene deshacer.`)) return
     void window.api.vectorize.clearAreaFills()
     setZones(0)
     setUhist((h) => ({ undo: h.undo.filter((a) => a.kind !== 'fill'), redo: [] }))
     scheduleRun(config)
   }
+
+  // ¿La selección incluye el FONDO (un componente gigante)? Aviso en la barra: clic+Supr
+  // sobre el fondo es EL gesto del flujo sustractivo, pero que sea a sabiendas.
+  const selHasBg = Boolean(
+    rasterRef.current &&
+      selComps.some((c) => c.area > 0.35 * (rasterRef.current as Raster).w * (rasterRef.current as Raster).h)
+  )
 
   // La línea de ayuda contextual (UN solo lugar: la barra de estado del lienzo).
   const canvasHint = !result
@@ -850,10 +910,10 @@ export default function Vectorizar(): React.JSX.Element {
                     </button>
                   ) : (
                     <span className="text-[11px] text-muted-foreground">
-                      Objetos y zonas: motor Local
+                      {zones > 0 ? `${zones} ediciones en pausa · ` : ''}Objetos y zonas: motor Local
                     </span>
                   )}
-                  {zones > 0 && canEditRaster && (
+                  {zones > 0 && (
                     <button
                       type="button"
                       disabled={busy}
@@ -888,6 +948,7 @@ export default function Vectorizar(): React.JSX.Element {
                   </span>
                   <span className="text-xs font-medium">
                     {selComps.length === 1 ? '1 objeto' : `${selComps.length} objetos`}
+                    {selHasBg && <span className="ml-1 font-semibold text-amber-600 dark:text-amber-400">· incluye el FONDO</span>}
                   </span>
                   <span className="mx-0.5 text-xs text-muted-foreground">→</span>
                   <label
@@ -1092,8 +1153,9 @@ export default function Vectorizar(): React.JSX.Element {
                     <button
                       type="button"
                       title="Mostrar todas las capas"
+                      disabled={busy}
                       onClick={showAll}
-                      className="text-xs font-medium text-muted-foreground hover:text-foreground"
+                      className="text-xs font-medium text-muted-foreground hover:text-foreground disabled:opacity-40"
                     >
                       Mostrar todas
                     </button>
@@ -1102,8 +1164,9 @@ export default function Vectorizar(): React.JSX.Element {
                     <button
                       type="button"
                       title="Vuelve la paleta al estado inicial"
+                      disabled={busy}
                       onClick={() => commitEdit(undefined, null)}
-                      className="ml-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+                      className="ml-1 text-xs font-medium text-muted-foreground hover:text-foreground disabled:opacity-40"
                     >
                       Restaurar
                     </button>
@@ -1126,8 +1189,9 @@ export default function Vectorizar(): React.JSX.Element {
                       <button
                         type="button"
                         title={hidden ? 'Mostrar capa' : 'Ocultar capa'}
+                        disabled={busy}
                         onClick={() => toggleLayer(i)}
-                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground"
+                        className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition hover:text-foreground disabled:opacity-40"
                       >
                         {hidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                       </button>
@@ -1139,7 +1203,7 @@ export default function Vectorizar(): React.JSX.Element {
                         <input
                           type="color"
                           value={rgbToHex(cur)}
-                          disabled={hidden}
+                          disabled={hidden || busy}
                           onChange={(ev) => editColor(i, { to: hexToRgb(ev.target.value) })}
                           className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
                         />
@@ -1155,9 +1219,10 @@ export default function Vectorizar(): React.JSX.Element {
                       <button
                         type="button"
                         title={isolated ? 'Mostrar todas' : 'Ver sola esta capa'}
+                        disabled={busy}
                         onClick={() => isolateLayer(i)}
                         className={cn(
-                          'flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border transition hover:text-foreground',
+                          'flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border transition hover:text-foreground disabled:opacity-40',
                           isolated ? 'border-foreground text-foreground' : 'text-muted-foreground'
                         )}
                       >

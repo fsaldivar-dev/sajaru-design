@@ -169,9 +169,12 @@ async function process(config: VectorizeConfig, sender: WebContents): Promise<Bg
     baseResult = { png: pngPath0, svg: svgPath }
     // Re-aplicá las ediciones de zona/objeto sobre el PNG recién trazado (persisten entre
     // re-trazados) y CONSOLIDALAS al vector: el SVG exportado refleja lo que se ve.
-    let pngPath = areaFills.length ? await applyAreaFills(pngPath0, sender) : pngPath0
-    editedRaster = pngPath
-    if (areaFills.length) {
+    // SOLO con motor local: estamparlas sobre el PNG de Recraft dejaría un preview que el
+    // SVG premium (que no se re-traza) no puede exportar — quedan "en pausa" hasta volver.
+    const applyFills = areaFills.length > 0 && config.method === 'local'
+    let pngPath = applyFills ? await applyAreaFills(pngPath0, sender) : pngPath0
+    editedRaster = applyFills ? pngPath : null
+    if (applyFills) {
       const c = await consolidateToVector(pngPath, sender)
       if (c) {
         pngPath = c.png
@@ -521,21 +524,47 @@ function clearAreaFills(): { ok: boolean } {
   return { ok: true }
 }
 
+// COLA de serialización: process/areaFill/objectEdit/undo/redo mutan editedRaster/lastResult
+// en secuencia de awaits — dos corriendo en paralelo (debounce de settings + una edición)
+// dejarían el estado del main según el orden de llegada y "Guardar SVG" exportaría otra
+// generación que la pantalla. Un solo carril: cada operación espera a la anterior.
+let opChain: Promise<unknown> = Promise.resolve()
+function enqueue<T>(fn: () => Promise<T>): Promise<T> {
+  const next = opChain.then(fn, fn)
+  opChain = next.catch(() => undefined)
+  return next
+}
+
+/** Las ediciones raster consolidan re-trazando LOCAL: con curvas Premium no aplican. */
+function rasterGuard(): { ok: false; error: { code: string; message: string } } | null {
+  if (lastTrace && lastTrace.method !== 'local') {
+    return {
+      ok: false,
+      error: { code: 'E_ENGINE', message: 'La edición de objetos/zonas está disponible con motor Local' }
+    }
+  }
+  return null
+}
+
 export function registerVectorizeIpc(ipcMain: IpcMain): void {
-  ipcMain.handle('vec:setImage', (_e, bytes: ArrayBuffer, name: string) => setImage(bytes, name))
-  ipcMain.handle('vec:process', (e, config: VectorizeConfig) => process(config, e.sender))
+  ipcMain.handle('vec:setImage', (_e, bytes: ArrayBuffer, name: string) =>
+    enqueue(() => setImage(bytes, name))
+  )
+  ipcMain.handle('vec:process', (e, config: VectorizeConfig) => enqueue(() => process(config, e.sender)))
   ipcMain.handle(
     'vec:areaFill',
     (e, rect: { x: number; y: number; w: number; h: number }, mode?: VectorAreaMode, to?: string) =>
-      areaFill(rect, mode ?? 'fill', to, e.sender)
+      enqueue(async () => rasterGuard() ?? areaFill(rect, mode ?? 'fill', to, e.sender))
   )
   ipcMain.handle(
     'vec:objectEdit',
     (e, points: Array<{ x: number; y: number }>, mode: 'erase' | 'recolor', to?: string) =>
-      objectEdit(points, mode, to, e.sender)
+      enqueue(async () => rasterGuard() ?? objectEdit(points, mode, to, e.sender))
   )
-  ipcMain.handle('vec:undoLastFill', (e, count?: number) => undoLastFill(count ?? 1, e.sender))
-  ipcMain.handle('vec:redoLastFill', (e) => redoLastFill(e.sender))
+  ipcMain.handle('vec:undoLastFill', (e, count?: number) =>
+    enqueue(async () => rasterGuard() ?? undoLastFill(count ?? 1, e.sender))
+  )
+  ipcMain.handle('vec:redoLastFill', (e) => enqueue(async () => rasterGuard() ?? redoLastFill(e.sender)))
   ipcMain.handle('vec:groupsGet', () => groups)
   ipcMain.handle('vec:groupsSet', (_e, gs: typeof groups) => {
     groups = Array.isArray(gs) ? gs : []
