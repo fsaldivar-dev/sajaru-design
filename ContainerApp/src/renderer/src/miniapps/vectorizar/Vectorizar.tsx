@@ -788,9 +788,9 @@ export default function Vectorizar(): React.JSX.Element {
    *  cuando es pura (robusto a re-trazados); MÁSCARA exacta cuando hay marquesina o resta.
    *  La selección de clics NO se limpia: al llegar el resultado se re-floodean las mismas
    *  semillas ("probar dos colores en la misma letra" = recolorear dos veces). */
-  async function applySelection(mode: 'erase' | 'recolor'): Promise<void> {
+  async function applySelection(mode: 'erase' | 'recolor' | 'colorize'): Promise<void> {
     if (!selComps.length || busy) return
-    const to = mode === 'recolor' ? actionColor : undefined
+    const to = mode === 'recolor' || mode === 'colorize' ? actionColor : undefined
     if (pureComps) {
       await runObjectEditPoints(selComps.map((c) => c.seed), mode, to)
       return
@@ -805,11 +805,19 @@ export default function Vectorizar(): React.JSX.Element {
 
   /** Núcleo de la edición por MÁSCARA (selección libre o grupo guardado por marco): el
    *  sidecar edita exactamente esos píxeles (re-escala la máscara al raster vigente). */
-  async function runMaskEdit(bytes: ArrayBuffer, mode: 'erase' | 'recolor', to?: string): Promise<boolean> {
+  async function runMaskEdit(bytes: ArrayBuffer, mode: 'erase' | 'recolor' | 'colorize', to?: string): Promise<boolean> {
     clearTimeout(debounceRef.current)
     const token = ++tokenRef.current
     setError(null)
-    setProgress({ value: 0, message: mode === 'erase' ? 'Borrando la selección…' : 'Recoloreando la selección…' })
+    setProgress({
+      value: 0,
+      message:
+        mode === 'erase'
+          ? 'Borrando la selección…'
+          : mode === 'colorize'
+            ? 'Tiñendo la selección…'
+            : 'Recoloreando la selección…'
+    })
     const r = await window.api.vectorize.maskEdit(bytes, mode, to)
     if (token !== tokenRef.current) return false
     setProgress(null)
@@ -853,7 +861,7 @@ export default function Vectorizar(): React.JSX.Element {
   /** Núcleo del modo OBJETO: N componentes conectados → sidecar → consolidar → historial. */
   async function runObjectEditPoints(
     points: Array<{ x: number; y: number }>,
-    mode: 'erase' | 'recolor',
+    mode: 'erase' | 'recolor' | 'colorize',
     to?: string
   ): Promise<boolean> {
     clearTimeout(debounceRef.current) // sin re-trazado en paralelo con la edición
@@ -922,10 +930,28 @@ export default function Vectorizar(): React.JSX.Element {
     const eff = effectiveMask(raster.w, raster.h, selComps, selSubs)
     if (!eff) return
     const bytes = await maskToPngBytes(raster.w, raster.h, eff.mask)
+    // Swatch del grupo = el color DOMINANTE real de la selección (no el de la 1ª pieza):
+    // el grupo contiene varios colores; el swatch muestra su base y Teñir mapea sobre ella.
+    const counts = new Map<number, number>()
+    for (let p = 0; p < eff.mask.length; p++) {
+      if (!eff.mask[p] || raster.data[p * 4 + 3] < 128) continue
+      const k = ((raster.data[p * 4] >> 3) << 10) | ((raster.data[p * 4 + 1] >> 3) << 5) | (raster.data[p * 4 + 2] >> 3)
+      counts.set(k, (counts.get(k) ?? 0) + 1)
+    }
+    let domK = -1
+    let domN = 0
+    for (const [k, n] of counts) if (n > domN) { domN = n; domK = k }
+    const domHex =
+      domK >= 0
+        ? '#' +
+          [((domK >> 10) & 31) << 3, ((domK >> 5) & 31) << 3, (domK & 31) << 3]
+            .map((v) => v.toString(16).padStart(2, '0'))
+            .join('')
+        : selComps[0].hex
     const g: VectorGroup = {
       id: `g${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`,
       name: `Grupo ${groups.length + 1}`,
-      color: selComps[0].hex,
+      color: domHex,
       seeds: [],
       maskPng: bytes,
       maskW: raster.w,
@@ -977,7 +1003,9 @@ export default function Vectorizar(): React.JSX.Element {
       const bytes = await maskToPngBytes(raster.w, raster.h, m)
       g = { ...g, seeds: [], maskPng: bytes, maskW: raster.w, maskH: raster.h }
     }
-    const ok = await runMaskEdit(g.maskPng as ArrayBuffer, 'recolor', hex)
+    // TEÑIR, no aplanar: el dominante del grupo cae exacto en el color elegido y las
+    // sombras/brillos se conservan (gorro rosa con sombras rosa oscuro, no rosa chato).
+    const ok = await runMaskEdit(g.maskPng as ArrayBuffer, 'colorize', hex)
     if (!ok) return
     const next = groups.map((x) => (x.id === g.id ? { ...g, color: hex } : x))
     setGroups(next)
@@ -1305,10 +1333,19 @@ export default function Vectorizar(): React.JSX.Element {
                   </label>
                   <button
                     type="button"
-                    onClick={() => void applySelection('recolor')}
+                    onClick={() => void applySelection('colorize')}
+                    title="Mueve el TONO conservando sombras y brillos (recolor de Illustrator/PS) — ideal para arte con sombreado"
                     className="rounded-md bg-foreground px-2.5 py-1 text-xs font-semibold text-background transition hover:opacity-90"
                   >
-                    Recolorear
+                    Teñir
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void applySelection('recolor')}
+                    title="Color PLANO exacto en toda la selección — ideal para logos de tintas planas"
+                    className="rounded-md border border-border px-2.5 py-1 text-xs font-medium text-muted-foreground transition hover:text-foreground"
+                  >
+                    Aplanar
                   </button>
                   <button
                     type="button"
@@ -1680,7 +1717,7 @@ export default function Vectorizar(): React.JSX.Element {
                       {g.hidden ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
                     </button>
                     <label
-                      title="Recolorear TODO el grupo"
+                      title="Teñir TODO el grupo: el color base cae exacto en el elegido y las sombras/brillos se conservan"
                       className="relative h-7 w-7 shrink-0 cursor-pointer overflow-hidden rounded-md border border-border"
                     >
                       <span className="block h-full w-full" style={{ backgroundColor: g.color ?? '#888888' }} />

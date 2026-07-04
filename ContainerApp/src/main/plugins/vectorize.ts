@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import type { ChildProcess } from 'node:child_process'
 import { BrowserWindow, clipboard, dialog, nativeImage, type IpcMain, type WebContents } from 'electron'
-import type { BgProcessResult, RgbColor, VectorAreaMode, VectorizeConfig } from '@shared/types'
+import type { BgProcessResult, RgbColor, VectorAreaMode, VectorGroup, VectorizeConfig } from '@shared/types'
 import { runSidecar, tmpRoot } from './sidecar'
 
 /**
@@ -61,14 +61,10 @@ let baseResult: { png: string; svg: string } | null = null
 // cero daño colateral y ediciones de ~0.5s); el vector se consolida UNA sola vez, al
 // exportar (ensureConsolidated).
 let dirtyVector = false
-// GRUPOS con nombre del diseñador ("Letras", "Gorro"…): semillas normalizadas de objetos.
-// Viven acá (no en el renderer) para sobrevivir cambios de mini app, igual que areaFills.
-let groups: Array<{
-  id: string
-  name: string
-  color?: string
-  seeds: Array<{ px: number; py: number }>
-}> = []
+// GRUPOS con nombre del diseñador ("Letras", "Gorro"…): esténciles (máscara) o semillas
+// legacy. Viven acá (no en el renderer) para sobrevivir cambios de mini app, igual que
+// areaFills. El main solo los almacena; la lógica vive en el renderer.
+let groups: VectorGroup[] = []
 let counter = 0
 
 async function setImage(bytes: ArrayBuffer, name: string): Promise<void> {
@@ -277,7 +273,10 @@ async function consolidateToVector(
   if (!lastTrace || lastTrace.method !== 'local') return null
   // Los colores que el usuario PINTÓ no pueden ser podados por mergeThin (un objeto
   // recoloreado con textura fina erosiona <35% y sin esto se fundiría al vecino).
-  const protect = [...new Set(areaFills.filter((f) => f.mode === 'recolor' && f.to).map((f) => f.to as string))]
+  // recolor Y colorize: el `to` exacto aparece pintado (en colorize, sobre el dominante).
+  const protect = [
+    ...new Set(areaFills.filter((f) => (f.mode === 'recolor' || f.mode === 'colorize') && f.to).map((f) => f.to as string))
+  ]
   const out = path.join(tmpRoot(TMP), `vector-${++counter}.png`)
   const r = await runSidecar(
     [
@@ -309,7 +308,7 @@ async function consolidateToVector(
  *  generación y consolida al vector UNA sola vez al final. `points` en px del PNG. */
 async function objectEdit(
   points: Array<{ x: number; y: number }>,
-  mode: 'erase' | 'recolor',
+  mode: 'erase' | 'recolor' | 'colorize',
   to: string | undefined,
   sender: WebContents
 ): Promise<BgProcessResult> {
@@ -359,7 +358,7 @@ async function objectEdit(
  *  la marquesina por color o un componente con zonas restadas. Un paso del historial. */
 async function maskEdit(
   maskBytes: ArrayBuffer,
-  mode: 'erase' | 'recolor',
+  mode: 'erase' | 'recolor' | 'colorize',
   to: string | undefined,
   sender: WebContents
 ): Promise<BgProcessResult> {
@@ -618,10 +617,10 @@ export function registerVectorizeIpc(ipcMain: IpcMain): void {
   )
   ipcMain.handle(
     'vec:objectEdit',
-    (e, points: Array<{ x: number; y: number }>, mode: 'erase' | 'recolor', to?: string) =>
+    (e, points: Array<{ x: number; y: number }>, mode: 'erase' | 'recolor' | 'colorize', to?: string) =>
       enqueue(async () => rasterGuard() ?? objectEdit(points, mode, to, e.sender))
   )
-  ipcMain.handle('vec:maskEdit', (e, mask: ArrayBuffer, mode: 'erase' | 'recolor', to?: string) =>
+  ipcMain.handle('vec:maskEdit', (e, mask: ArrayBuffer, mode: 'erase' | 'recolor' | 'colorize', to?: string) =>
     enqueue(async () => rasterGuard() ?? maskEdit(mask, mode, to, e.sender))
   )
   ipcMain.handle('vec:undoLastFill', (e, count?: number) =>

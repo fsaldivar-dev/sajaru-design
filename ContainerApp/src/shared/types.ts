@@ -99,7 +99,7 @@ export interface VectorizeConfig {
 }
 
 /** Modo de la herramienta de ZONA del vectorizado (rect sobre el raster del resultado). */
-export type VectorAreaMode = 'fill' | 'erase' | 'recolor'
+export type VectorAreaMode = 'fill' | 'erase' | 'recolor' | 'colorize'
 
 /** Grupo con nombre del diseñador ("Letras", "Gorro"…). Dos sabores:
  *  - por SEMILLAS (selección de clics): coords normalizadas 0..1 que se re-floodean sobre
@@ -398,12 +398,12 @@ export interface SajaruApi {
      */
     objectEdit: (
       points: Array<{ x: number; y: number }>,
-      mode: 'erase' | 'recolor',
+      mode: 'erase' | 'recolor' | 'colorize',
       to?: string
     ) => Promise<BgProcessResult>
     /** Selección LIBRE: edita EXACTAMENTE los píxeles del PNG-máscara (alfa>=128) —
      *  marquesina por color o componente con zonas restadas. Un paso del historial. */
-    maskEdit: (mask: ArrayBuffer, mode: 'erase' | 'recolor', to?: string) => Promise<BgProcessResult>
+    maskEdit: (mask: ArrayBuffer, mode: 'erase' | 'recolor' | 'colorize', to?: string) => Promise<BgProcessResult>
     /** Deshace LA ÚLTIMA acción de zona/objeto (`count` entradas = un paso, p.ej. un grupo). */
     undoLastFill: (count?: number) => Promise<BgProcessResult & { remaining?: number }>
     /** Rehace la última edición deshecha. */

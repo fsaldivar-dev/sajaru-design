@@ -440,8 +440,8 @@ program
   .option('--rect <x,y,w,h>', 'ZONA rectangular en px del PNG: x,y,w,h')
   .option('--point <x,y>', 'OBJETO: click en px — selecciona el componente conectado de ese color')
   .option('--mask <path>', 'MÁSCARA: PNG con alfa>=128 en los píxeles a editar (selección libre)')
-  .addOption(new Option('--mode <m>', 'fill (fundir) | erase (borrar) | recolor').choices(['fill', 'erase', 'recolor']).default('fill'))
-  .option('--to <hex>', 'color destino para recolor (#rrggbb)')
+  .addOption(new Option('--mode <m>', 'fill (fundir) | erase (borrar) | recolor | colorize (teñir conservando sombreado)').choices(['fill', 'erase', 'recolor', 'colorize']).default('fill'))
+  .option('--to <hex>', 'color destino para recolor/colorize (#rrggbb)')
   .action((opts: Opts, cmd: Command) =>
     runCmd('area-fill', cmd, (ctx) => {
       if (!opts.rect && !opts.point && !opts.mask) throw new Error('Falta --rect (zona), --point (objeto) o --mask (selección)')

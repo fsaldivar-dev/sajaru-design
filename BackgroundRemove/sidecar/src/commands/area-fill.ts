@@ -3,7 +3,68 @@ import path from 'node:path'
 import sharp from 'sharp'
 import type { Ctx } from '../core/context'
 
-export type AreaMode = 'fill' | 'erase' | 'recolor'
+export type AreaMode = 'fill' | 'erase' | 'recolor' | 'colorize'
+
+// --- Teñir (colorize): mueve el TONO conservando el sombreado -------------------------
+// El color DOMINANTE de la zona se mapea EXACTO al destino; cada pixel conserva su
+// luminosidad RELATIVA respecto del dominante (sombras → sombras del tono nuevo, brillos
+// → brillos). Es el "recolorear grupo" de Illustrator/Photoshop, no un relleno plano.
+function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+  const rn = r / 255, gn = g / 255, bn = b / 255
+  const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn)
+  const l = (max + min) / 2
+  if (max === min) return [0, 0, l]
+  const d = max - min
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
+  let h: number
+  if (max === rn) h = ((gn - bn) / d + (gn < bn ? 6 : 0)) / 6
+  else if (max === gn) h = ((bn - rn) / d + 2) / 6
+  else h = ((rn - gn) / d + 4) / 6
+  return [h, s, l]
+}
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  if (s === 0) {
+    const v = Math.round(l * 255)
+    return [v, v, v]
+  }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s
+  const p = 2 * l - q
+  const f = (t0: number): number => {
+    let t = t0
+    if (t < 0) t += 1
+    if (t > 1) t -= 1
+    if (t < 1 / 6) return p + (q - p) * 6 * t
+    if (t < 1 / 2) return q
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6
+    return p
+  }
+  return [Math.round(f(h + 1 / 3) * 255), Math.round(f(h) * 255), Math.round(f(h - 1 / 3) * 255)]
+}
+/** Mapa de teñido: pixel → mismo tono/saturación del destino, luminosidad corrida para
+ *  que el DOMINANTE caiga exacto en el destino y el sombreado se conserve. */
+function makeColorize(base: { r: number; g: number; b: number }, to: { r: number; g: number; b: number }) {
+  const [, , bl] = rgbToHsl(base.r, base.g, base.b)
+  const [th, ts, tl] = rgbToHsl(to.r, to.g, to.b)
+  return (r: number, g: number, b: number): [number, number, number] => {
+    const [, , l] = rgbToHsl(r, g, b)
+    const l2 = Math.max(0, Math.min(1, tl + (l - bl)))
+    return hslToRgb(th, ts, l2)
+  }
+}
+/** Color dominante (cuantizado 5 bits) entre los píxeles opacos marcados por `on`. */
+function dominantWhere(data: Buffer, N: number, on: (p: number) => boolean): { r: number; g: number; b: number } | null {
+  const counts = new Map<number, { n: number; r: number; g: number; b: number }>()
+  for (let p = 0; p < N; p++) {
+    if (!on(p) || data[p * 4 + 3] < 128) continue
+    const key = ((data[p * 4] >> 3) << 10) | ((data[p * 4 + 1] >> 3) << 5) | (data[p * 4 + 2] >> 3)
+    const e = counts.get(key)
+    if (e) e.n++
+    else counts.set(key, { n: 1, r: data[p * 4], g: data[p * 4 + 1], b: data[p * 4 + 2] })
+  }
+  let dom: { n: number; r: number; g: number; b: number } | null = null
+  for (const e of counts.values()) if (!dom || e.n > dom.n) dom = e
+  return dom
+}
 
 /**
  * Herramientas de ZONA sobre el raster del resultado (rect en píxeles del PNG):
@@ -59,13 +120,26 @@ export async function areaFillCommand(
       .raw()
       .toBuffer({ resolveWithObject: true })
     const md = m.data
+    const tint =
+      mode === 'colorize' && opts.to
+        ? (() => {
+            const dom = dominantWhere(data, W * H, (p) => md[p * 4 + 3] >= 128)
+            return dom ? makeColorize(dom, opts.to) : null
+          })()
+        : null
     for (let p = 0; p < W * H; p++) {
       if (md[p * 4 + 3] < 128 || data[p * 4 + 3] < 128) continue
-      if (mode === 'erase') data[p * 4 + 3] = 0
-      else if (opts.to) {
-        data[p * 4] = opts.to.r
-        data[p * 4 + 1] = opts.to.g
-        data[p * 4 + 2] = opts.to.b
+      const i = p * 4
+      if (mode === 'erase') data[i + 3] = 0
+      else if (tint) {
+        const [r2, g2, b2] = tint(data[i], data[i + 1], data[i + 2])
+        data[i] = r2
+        data[i + 1] = g2
+        data[i + 2] = b2
+      } else if (opts.to) {
+        data[i] = opts.to.r
+        data[i + 1] = opts.to.g
+        data[i + 2] = opts.to.b
       }
     }
     const outBuf = await sharp(data, { raw: { width: W, height: H, channels: 4 } }).png().toBuffer()
@@ -122,13 +196,21 @@ export async function areaFillCommand(
       if (d < RING2) ring.push(p)
     }
     for (const p of ring) inComp[p] = 1
+    const tintPt =
+      mode === 'colorize' && opts.to ? makeColorize({ r: cr, g: cg, b: cb }, opts.to) : null
     for (let p = 0; p < W * H; p++) {
       if (!inComp[p]) continue
-      if (mode === 'erase') data[p * 4 + 3] = 0
-      else if (opts.to) {
-        data[p * 4] = opts.to.r
-        data[p * 4 + 1] = opts.to.g
-        data[p * 4 + 2] = opts.to.b
+      const i = p * 4
+      if (mode === 'erase') data[i + 3] = 0
+      else if (tintPt) {
+        const [r2, g2, b2] = tintPt(data[i], data[i + 1], data[i + 2])
+        data[i] = r2
+        data[i + 1] = g2
+        data[i + 2] = b2
+      } else if (opts.to) {
+        data[i] = opts.to.r
+        data[i + 1] = opts.to.g
+        data[i + 2] = opts.to.b
       }
     }
     const outBuf = await sharp(data, { raw: { width: W, height: H, channels: 4 } }).png().toBuffer()
@@ -185,6 +267,7 @@ export async function areaFillCommand(
     0.7,
     mode === 'fill' ? 'Fundiendo al color predominante' : mode === 'erase' ? 'Borrando la zona' : 'Recoloreando la zona'
   )
+  const tintRect = mode === 'colorize' && opts.to ? makeColorize({ r: dom.r, g: dom.g, b: dom.b }, opts.to) : null
   for (let y = ry; y < ry + rh; y++) {
     for (let x = rx; x < rx + rw; x++) {
       const i = (y * W + x) * 4
@@ -195,6 +278,12 @@ export async function areaFillCommand(
         data[i + 2] = dom.b
       } else if (mode === 'erase') {
         if (matchesDom(i)) data[i + 3] = 0
+      } else if (tintRect) {
+        // colorize: TODA la zona se tiñe conservando su sombreado
+        const [r2, g2, b2] = tintRect(data[i], data[i + 1], data[i + 2])
+        data[i] = r2
+        data[i + 1] = g2
+        data[i + 2] = b2
       } else {
         // recolor: solo los píxeles del color dominante del rect
         if (matchesDom(i) && opts.to) {
