@@ -12,6 +12,10 @@ on:
   push:
     tags: ['v*']
 
+# El GITHUB_TOKEN por defecto es read-only: sin esto, crear el Release da 403.
+permissions:
+  contents: write
+
 jobs:
   linux:
     runs-on: ubuntu-latest
