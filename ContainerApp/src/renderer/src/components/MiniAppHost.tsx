@@ -4,6 +4,7 @@ import type { MiniAppEntry } from '@renderer/miniapps/types'
 import mascot from '@renderer/assets/mascot.png'
 import { CreditsBadge } from './CreditsBadge'
 import { ThemeToggle } from './ThemeToggle'
+import { UpdatePill } from './UpdatePill'
 
 /** Monta la UI de una mini app a pantalla completa, con botón Volver al grid. */
 export function MiniAppHost({ entry, onBack }: { entry: MiniAppEntry; onBack: () => void }) {
@@ -22,7 +23,9 @@ export function MiniAppHost({ entry, onBack }: { entry: MiniAppEntry; onBack: ()
         </button>
         <img src={mascot} alt="" aria-hidden className="h-6 w-auto select-none" draggable={false} />
         <span className="text-sm font-medium">{entry.manifest.name}</span>
-        <CreditsBadge className="ml-auto" />
+        <span className="ml-auto" />
+        <UpdatePill />
+        <CreditsBadge />
         <ThemeToggle />
       </header>
 

@@ -3,6 +3,7 @@ import { APP } from '@renderer/config/app'
 import mascot from '@renderer/assets/mascot.png'
 import { CreditsBadge } from './CreditsBadge'
 import { ThemeToggle } from './ThemeToggle'
+import { UpdatePill } from './UpdatePill'
 
 interface Props {
   query: string
@@ -29,6 +30,7 @@ export function Header({ query, onQuery }: Props): React.JSX.Element {
             className="h-9 w-full rounded-lg border border-border bg-card pl-9 pr-3 text-sm outline-none placeholder:text-muted-foreground focus:border-primary/60"
           />
         </div>
+        <UpdatePill />
         <CreditsBadge />
         <ThemeToggle />
       </div>

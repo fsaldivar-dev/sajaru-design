@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import type { BgProgress, SajaruApi } from '@shared/types'
+import type { BgProgress, SajaruApi, UpdateState } from '@shared/types'
 
 /**
  * Puente seguro renderer <-> main. Las mini apps usan `window.api`,
@@ -52,6 +52,17 @@ const api: SajaruApi = {
       const listener = (_e: IpcRendererEvent, ev: BgProgress): void => cb(ev)
       ipcRenderer.on('vec:progress', listener)
       return () => ipcRenderer.removeListener('vec:progress', listener)
+    }
+  },
+  updates: {
+    get: () => ipcRenderer.invoke('upd:get'),
+    check: () => ipcRenderer.invoke('upd:check'),
+    install: () => ipcRenderer.invoke('upd:install'),
+    open: () => ipcRenderer.invoke('upd:open'),
+    onStatus: (cb) => {
+      const listener = (_e: IpcRendererEvent, st: UpdateState): void => cb(st)
+      ipcRenderer.on('upd:status', listener)
+      return () => ipcRenderer.removeListener('upd:status', listener)
     }
   },
   upscale: {

@@ -12,12 +12,27 @@ se compila en la nube con [.github/workflows/build-linux.yml](../.github/workflo
 - **Build manual**: GitHub → pestaña **Actions** → *Build Linux (Omarchy)* → **Run
   workflow** → al terminar, bajá el artifact `sajaru-design-linux-*` (trae el AppImage y
   el .pacman).
-- **Release**: taguear una versión publica los instaladores en GitHub Releases:
+- **Release**: taguear una versión publica los instaladores en GitHub Releases.
+  **Primero subí la versión** en `ContainerApp/package.json` (el CI corta el build si el
+  tag no coincide — el auto-update compara esas versiones):
   ```bash
-  git tag v0.1.0 && git push --tags
+  # 1) editá ContainerApp/package.json → "version": "0.2.0"
+  git commit -am "v0.2.0"
+  git tag v0.2.0 && git push && git push --tags
   ```
 - El workflow compila el sidecar con `npm ci` EN Linux (binarios nativos correctos),
   corre el typecheck y empaqueta con electron-builder.
+
+## Actualizaciones automáticas
+
+Las apps instaladas **se enteran solas** de cada release (revisan al arrancar y cada 6 h):
+
+- **AppImage**: auto-update completo — descarga en segundo plano y la barra superior
+  muestra **"Reiniciar y actualizar"** (un clic instala y reabre). Para esto el release
+  debe incluir `latest-linux.yml` y los `.blockmap` (el workflow ya los adjunta).
+- **Instalación .pacman**: la app no puede auto-instalarse; la barra muestra
+  **"vX.Y.Z disponible ↗"** con link a la página del release para bajar el .pacman nuevo
+  (`sudo pacman -U ...`).
 
 Lo que sigue abajo es la vía manual (una máquina Arch/Omarchy real).
 

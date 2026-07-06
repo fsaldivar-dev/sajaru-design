@@ -387,6 +387,12 @@ Un flujo completo de ejemplo:
 
 ## 7. Preguntas frecuentes
 
+**¿Cómo se actualiza la app?**
+Sola. Al arrancar (y cada tantas horas) revisa si hay versión nueva en GitHub:
+- Si la instalaste como **AppImage**, la descarga en segundo plano y en la barra superior aparece **"Reiniciar y actualizar"** — un clic y listo.
+- Si la instalaste con **pacman**, la barra muestra **"vX.Y.Z disponible ↗"**: te lleva a la página de descarga para instalar el paquete nuevo (`sudo pacman -U …`).
+Si no aparece nada, ya estás al día.
+
 **¿Necesito internet para usar Sajaru Design?**
 No para lo básico. Todas las opciones **Local** funcionan offline. Solo necesitás internet para **IA Premium (Recraft)** y para la **descarga inicial** de cada modelo de IA local (una sola vez por modelo).
 

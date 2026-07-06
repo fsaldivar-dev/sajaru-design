@@ -19,6 +19,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # El auto-update compara la versión del package con la del release: si taggeás v0.2.0
+      # pero package.json sigue en 0.1.0, el updater ve otra versión y entra en loop.
+      # Este guard corta el build ANTES de publicar un release roto.
+      - name: Verificar tag == versión de ContainerApp/package.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./ContainerApp/package.json').version")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::El tag v$TAG no coincide con ContainerApp/package.json ($PKG). Subí la versión del package y re-taggeá."
+            exit 1
+          fi
+
       # bsdtar: lo usa fpm para armar el paquete pacman (.MTREE) — no viene en el runner.
       - name: Dependencias del sistema (bsdtar para el target pacman)
         run: sudo apt-get update -q && sudo apt-get install -y -q libarchive-tools
@@ -59,9 +72,13 @@ jobs:
           path: |
             ContainerApp/dist/*.AppImage
             ContainerApp/dist/*.pacman
+            ContainerApp/dist/latest-linux.yml
+            ContainerApp/dist/*.blockmap
           if-no-files-found: error
           retention-days: 14
 
+      # latest-linux.yml + .blockmap son los que lee electron-updater: SIN ellos en el
+      # release, el AppImage no se auto-actualiza (el blockmap habilita descargas delta).
       - name: Publicar Release (solo tags v*)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
@@ -69,4 +86,6 @@ jobs:
           files: |
             ContainerApp/dist/*.AppImage
             ContainerApp/dist/*.pacman
+            ContainerApp/dist/latest-linux.yml
+            ContainerApp/dist/*.blockmap
           generate_release_notes: true

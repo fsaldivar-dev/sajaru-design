@@ -60,5 +60,11 @@ pacman:
     - ffmpeg
     - ghostscript
 
-# En dev no publicamos; el release se sube a mano.
-publish: null
+# Updates: los releases viven en GitHub (los sube el CI con softprops — por eso el workflow
+# usa --publish never). Este bloque cumple dos roles: (1) le dice a electron-updater DÓNDE
+# buscar actualizaciones en runtime, y (2) hace que electron-builder genere latest-linux.yml
+# (el manifiesto que el updater compara) junto al AppImage.
+publish:
+  provider: github
+  owner: fsaldivar-dev
+  repo: sajaru-design

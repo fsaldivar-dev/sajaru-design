@@ -11,6 +11,7 @@ import { registerEditorIpc } from './plugins/editor'
 import { registerSegmentSelectIpc } from './plugins/segment-select'
 import { registerRecraftIpc } from './plugins/recraft'
 import { createSplash } from './splash'
+import { registerUpdaterIpc, startUpdater } from './updater'
 
 // Omarchy/Arch (Wayland/Hyprland): Chromium puede BLOQUEAR WebGL por la blocklist de
 // GPU/Mesa y el visor 3D queda en NEGRO aunque el resto de la app funcione.
@@ -92,6 +93,8 @@ app.whenReady().then(() => {
   registerEditorIpc(ipcMain)
   registerSegmentSelectIpc(ipcMain)
   registerRecraftIpc(ipcMain)
+  registerUpdaterIpc(ipcMain)
+  startUpdater()
 
   // Splash de arranque (estilo Ps/Corel) mientras el renderer principal monta.
   const splash = createSplash(app.getVersion())

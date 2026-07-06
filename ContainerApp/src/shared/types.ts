@@ -155,6 +155,25 @@ export interface PrintPrepConfig {
   format: 'png' | 'tiff'
 }
 
+/**
+ * Estado de las ACTUALIZACIONES de la app (releases en GitHub):
+ *  - 'downloading'/'ready': camino AUTO (AppImage) — descarga y "Reiniciar y actualizar".
+ *  - 'available-manual': camino NOTIFICACIÓN (.pacman / dev) — link a la página del release.
+ *  - 'none': al día · 'error': sin red/rate-limit (se reintenta en el próximo ciclo).
+ */
+export interface UpdateState {
+  state: 'idle' | 'checking' | 'none' | 'downloading' | 'ready' | 'available-manual' | 'error'
+  /** Versión instalada (app.getVersion()). */
+  current: string
+  /** Versión nueva detectada (si hay). */
+  latest?: string
+  /** Progreso de descarga 0..100 (solo 'downloading'). */
+  percent?: number
+  /** Página del release (camino manual). */
+  url?: string
+  message?: string
+}
+
 /** Evento de progreso NDJSON reenviado del sidecar al renderer. */
 export interface BgProgress {
   type: 'progress'
@@ -435,6 +454,18 @@ export interface SajaruApi {
     ) => Promise<{ saved: boolean; path?: string; error?: string }>
     copyResult: () => Promise<{ copied: boolean }>
     onProgress: (cb: (ev: BgProgress) => void) => () => void
+  }
+  updates: {
+    /** Estado actual (pull inicial al montar la UI). */
+    get: () => Promise<UpdateState>
+    /** Fuerza un chequeo ahora (también funciona en dev, vía la API de GitHub). */
+    check: () => Promise<UpdateState>
+    /** AppImage con update descargado: reinicia e instala. */
+    install: () => Promise<{ ok: boolean }>
+    /** Abre la página del release (camino notificación: .pacman / dev). */
+    open: () => Promise<{ ok: boolean }>
+    /** Push de cambios de estado (checking/downloading %/ready/available-manual…). */
+    onStatus: (cb: (st: UpdateState) => void) => () => void
   }
   upscale: {
     setImage: (bytes: ArrayBuffer, name: string) => Promise<void>
