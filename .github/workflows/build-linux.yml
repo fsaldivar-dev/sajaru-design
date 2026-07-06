@@ -12,12 +12,29 @@ on:
   push:
     tags: ['v*']
 
+# El GITHUB_TOKEN por defecto es read-only: sin esto, crear el Release da 403.
+permissions:
+  contents: write
+
 jobs:
   linux:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+
+      # El auto-update compara la versión del package con la del release: si taggeás v0.2.0
+      # pero package.json sigue en 0.1.0, el updater ve otra versión y entra en loop.
+      # Este guard corta el build ANTES de publicar un release roto.
+      - name: Verificar tag == versión de ContainerApp/package.json
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./ContainerApp/package.json').version")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::El tag v$TAG no coincide con ContainerApp/package.json ($PKG). Subí la versión del package y re-taggeá."
+            exit 1
+          fi
 
       # bsdtar: lo usa fpm para armar el paquete pacman (.MTREE) — no viene en el runner.
       - name: Dependencias del sistema (bsdtar para el target pacman)
@@ -52,16 +69,24 @@ jobs:
       - name: Listar salida
         run: ls -lh "ContainerApp/dist" | grep -E "AppImage|pacman" || ls -lh ContainerApp/dist
 
-      - name: Subir artifacts (toda corrida)
+      # SOLO en corridas manuales: los artifacts SÍ gastan la cuota de storage de Actions
+      # (0.5 GB/mes — un build son ~858 MB), así que en los tags NO subimos artifact: el
+      # Release ya lleva los archivos y los assets de Releases NO cuentan contra esa cuota.
+      - name: Subir artifacts (solo corridas manuales, retención corta)
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: sajaru-design-linux-${{ github.run_number }}
           path: |
             ContainerApp/dist/*.AppImage
             ContainerApp/dist/*.pacman
+            ContainerApp/dist/latest-linux.yml
+            ContainerApp/dist/*.blockmap
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 2
 
+      # latest-linux.yml + .blockmap son los que lee electron-updater: SIN ellos en el
+      # release, el AppImage no se auto-actualiza (el blockmap habilita descargas delta).
       - name: Publicar Release (solo tags v*)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
@@ -69,4 +94,9 @@ jobs:
           files: |
             ContainerApp/dist/*.AppImage
             ContainerApp/dist/*.pacman
+            ContainerApp/dist/latest-linux.yml
+            ContainerApp/dist/*.blockmap
           generate_release_notes: true
+          # Release HISTORICO (re-compilado del commit del 2/jul): nunca debe marcar
+          # 'Latest' — el updater lee releases/latest y debe seguir viendo v0.2.0+.
+          make_latest: 'false'
