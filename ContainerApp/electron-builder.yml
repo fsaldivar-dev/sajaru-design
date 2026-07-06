@@ -48,10 +48,14 @@ linux:
     quitar fondo por lote, mejorar resolución, vectorizar logos, preparar
     archivos para sublimación y generar mockups 3D con video 360°.
 
+# SIN espacios en los nombres de archivo: GitHub renombra los espacios de los assets
+# (→ puntos) y el nombre deja de coincidir con latest-linux.yml → el auto-update da 404.
+# 'Sajaru-Design' literal = exactamente lo que electron-updater escribe en el manifiesto.
 appImage:
-  artifactName: ${productName}-${version}-${arch}.${ext}
+  artifactName: Sajaru-Design-${version}-${arch}.${ext}
 
 pacman:
+  artifactName: sajaru-design-${version}-${arch}.${ext}
   # Dependencias de sistema del motor: node para el sidecar, ffmpeg (video 360°),
   # ghostscript (exportar vector a PDF/EPS). El AppImage no declara deps: documentado
   # en README/docs que requiere estos paquetes instalados.
