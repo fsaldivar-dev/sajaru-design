@@ -65,7 +65,11 @@ jobs:
       - name: Listar salida
         run: ls -lh "ContainerApp/dist" | grep -E "AppImage|pacman" || ls -lh ContainerApp/dist
 
-      - name: Subir artifacts (toda corrida)
+      # SOLO en corridas manuales: los artifacts SÍ gastan la cuota de storage de Actions
+      # (0.5 GB/mes — un build son ~858 MB), así que en los tags NO subimos artifact: el
+      # Release ya lleva los archivos y los assets de Releases NO cuentan contra esa cuota.
+      - name: Subir artifacts (solo corridas manuales, retención corta)
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: sajaru-design-linux-${{ github.run_number }}
@@ -75,7 +79,7 @@ jobs:
             ContainerApp/dist/latest-linux.yml
             ContainerApp/dist/*.blockmap
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 2
 
       # latest-linux.yml + .blockmap son los que lee electron-updater: SIN ellos en el
       # release, el AppImage no se auto-actualiza (el blockmap habilita descargas delta).
